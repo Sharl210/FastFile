@@ -125,7 +125,9 @@
       color: #9a6b00;
     }
     #chat {
-      height: 56vh;
+      height: 66vh;
+      min-height: 420px;
+      max-height: 82vh;
       overflow: auto;
       display: flex;
       flex-direction: column;
@@ -134,6 +136,7 @@
       background: #f9fbff;
       border: 1px solid #e4ebf5;
       border-radius: 10px;
+      resize: vertical;
     }
     .item {
       display: flex;
@@ -401,7 +404,10 @@
 
     @media (max-width: 768px) {
       .page { padding: 8px; gap: 8px; }
-      #chat { height: 50vh; }
+      #chat {
+        height: 58vh;
+        min-height: 320px;
+      }
       .task-overlay { padding: 0; }
       .task-dialog {
         width: 100%;
@@ -465,7 +471,7 @@
 
   <div class="page">
     <div class="topbar panel">
-      <strong class="topbar-title">聊天式文件传输助手</strong>
+      <strong class="topbar-title">FastFile</strong>
       <div class="actions topbar-actions" id="normalActions">
         <button id="uploadTasksBtn">上传任务</button>
         <button id="manageBtn" class="success">管理</button>
@@ -857,13 +863,15 @@
         } else if ((msg.mime_type || '').startsWith('video/')) {
           const video = document.createElement('video');
           video.className = 'thumb';
-          video.controls = true;
           video.preload = 'metadata';
+          video.muted = true;
+          video.playsInline = true;
           video.src = msg.file_url;
           video.style.cursor = 'pointer';
           video.title = '点击放大播放（支持上一条/下一条）';
           video.onclick = (e) => {
             e.preventDefault();
+            video.pause();
             openMediaByMessageId(msg.id);
           };
           bubble.appendChild(video);
@@ -931,6 +939,15 @@
         chat.appendChild(row);
       });
 
+      if (manageMode) {
+        orderedRows.forEach((row) => {
+          const checkbox = row.querySelector('input[type="checkbox"]');
+          if (checkbox) {
+            checkbox.checked = selectedIds.has(Number(row.dataset.messageId));
+          }
+        });
+      }
+
       syncMediaHistoryContext(false);
 
       if (followBottom) {
@@ -988,6 +1005,8 @@
         video.src = item.file_url;
         video.controls = true;
         video.autoplay = true;
+        video.playsInline = true;
+        video.addEventListener('play', () => pauseOtherVideos(video));
         mediaStage.appendChild(video);
       }
 
@@ -1191,7 +1210,8 @@
         etaSec: null,
         error: '',
         retries: 0,
-        controller: null,
+        controllers: new Set(),
+        chunks: [],
       };
     }
 
@@ -1212,6 +1232,46 @@
       }
       task.lastSampleAt = now;
       task.lastSampleBytes = task.uploadedBytes;
+    }
+
+    async function sha256Hex(blob) {
+      const buffer = await blob.arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function pauseOtherVideos(currentVideo) {
+      document.querySelectorAll('video').forEach((video) => {
+        if (video !== currentVideo) {
+          video.pause();
+        }
+      });
+    }
+
+    function buildChunkPlan(task, chunkSize, completedParts) {
+      const doneMap = new Map();
+      for (const part of completedParts || []) {
+        doneMap.set(Number(part.start_byte), {
+          start: Number(part.start_byte),
+          end: Number(part.end_byte),
+          checksum: part.checksum,
+          done: true,
+        });
+      }
+
+      const plan = [];
+      for (let start = 0; start < task.totalBytes; start += chunkSize) {
+        const end = Math.min(task.totalBytes, start + chunkSize);
+        const existing = doneMap.get(start);
+        plan.push({
+          start,
+          end,
+          checksum: existing?.checksum || '',
+          done: Boolean(existing && existing.end === end),
+          inflight: false,
+        });
+      }
+      return plan;
     }
 
     function renderUploadTasks() {
@@ -1272,7 +1332,10 @@
       const task = uploadTasks.get(taskId);
       if (!task) return;
       task.status = 'cancelled';
-      if (task.controller) task.controller.abort();
+      task.controllers.forEach((controller) => {
+        controller.abort();
+      });
+      task.controllers.clear();
       if (task.uploadId) {
         try {
           await api('/api/uploads/cancel', {
@@ -1288,6 +1351,7 @@
     async function processUploadTask(task) {
       const CHUNK_FALLBACK = 4 * 1024 * 1024;
       let chunkSize = CHUNK_FALLBACK;
+      let parallelLimit = 4;
 
       try {
         const init = await api('/api/uploads/init', {
@@ -1302,60 +1366,89 @@
         });
 
         task.uploadId = init.upload_id;
-        task.uploadedBytes = Number(init.received_bytes || 0);
         chunkSize = Number(init.chunk_size || CHUNK_FALLBACK);
+        parallelLimit = Number(init.parallel_limit || 4);
+        task.chunks = buildChunkPlan(task, chunkSize, init.completed_parts || []);
+        task.uploadedBytes = task.chunks
+          .filter((chunk) => chunk.done)
+          .reduce((sum, chunk) => sum + (chunk.end - chunk.start), 0);
         task.status = 'uploading';
         updateTaskSpeed(task);
         renderUploadTasks();
 
-        while (task.uploadedBytes < task.totalBytes) {
-          if (task.status === 'cancelled') return;
-
-          const start = task.uploadedBytes;
-          const end = Math.min(task.totalBytes, start + chunkSize);
-          const blob = task.file.slice(start, end);
-          task.controller = new AbortController();
-
-          try {
-            const chunkResp = await api('/api/uploads/chunk', {
-              method: 'POST',
-              headers: {
-                'X-Upload-Id': task.uploadId,
-                'X-Start-Byte': String(start)
-              },
-              body: blob,
-              signal: task.controller.signal,
-            });
-
-            task.uploadedBytes = Number(chunkResp.received_bytes || task.uploadedBytes);
-            task.retries = 0;
-            task.status = 'uploading';
-            updateTaskSpeed(task);
-            renderUploadTasks();
-          } catch (err) {
+        const uploadChunk = async (chunk) => {
+          while (!chunk.done) {
             if (task.status === 'cancelled') return;
-            task.retries += 1;
-            if (task.retries > 5) throw err;
+            const blob = task.file.slice(chunk.start, chunk.end);
+            const controller = new AbortController();
+            task.controllers.add(controller);
 
-            task.status = 'retrying';
-            task.error = `网络波动，重试第 ${task.retries} 次`;
-            renderUploadTasks();
-            await new Promise((r) => setTimeout(r, Math.min(1600, 250 * task.retries)));
+            try {
+              chunk.checksum = chunk.checksum || await sha256Hex(blob);
+              const chunkResp = await api('/api/uploads/chunk', {
+                method: 'POST',
+                headers: {
+                  'X-Upload-Id': task.uploadId,
+                  'X-Start-Byte': String(chunk.start),
+                  'X-Chunk-Sha256': chunk.checksum,
+                },
+                body: blob,
+                signal: controller.signal,
+              });
 
-            const resumed = await api('/api/uploads/init', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                file_key: task.fileKey,
-                file_name: task.file.name,
-                file_size: task.file.size,
-                mime_type: task.file.type || null,
-              })
-            });
-            task.uploadId = resumed.upload_id;
-            task.uploadedBytes = Number(resumed.received_bytes || task.uploadedBytes);
+              chunk.done = true;
+              chunk.inflight = false;
+              task.controllers.delete(controller);
+              task.uploadedBytes = Number(chunkResp.received_bytes || task.uploadedBytes);
+              task.retries = 0;
+              task.status = 'uploading';
+              task.error = '';
+              updateTaskSpeed(task);
+              renderUploadTasks();
+            } catch (err) {
+              task.controllers.delete(controller);
+              chunk.inflight = false;
+              if (task.status === 'cancelled') return;
+              task.retries += 1;
+              if (task.retries > 5) throw err;
+
+              task.status = 'retrying';
+              task.error = `网络波动，重试第 ${task.retries} 次`;
+              renderUploadTasks();
+              await new Promise((r) => setTimeout(r, Math.min(1600, 250 * task.retries)));
+
+              const resumed = await api('/api/uploads/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  file_key: task.fileKey,
+                  file_name: task.file.name,
+                  file_size: task.file.size,
+                  mime_type: task.file.type || null,
+                })
+              });
+              task.uploadId = resumed.upload_id;
+              task.chunks = buildChunkPlan(task, chunkSize, resumed.completed_parts || []).map((nextChunk) => {
+                const current = task.chunks.find((item) => item.start === nextChunk.start);
+                return current && current.done ? { ...current, done: true } : nextChunk;
+              });
+              task.uploadedBytes = Number(resumed.received_bytes || task.uploadedBytes);
+            }
           }
-        }
+        };
+
+        const workers = Array.from({ length: Math.max(1, parallelLimit) }, async () => {
+          while (true) {
+            if (task.status === 'cancelled') return;
+            const nextChunk = task.chunks.find((chunk) => !chunk.done && !chunk.inflight);
+            if (!nextChunk) return;
+            nextChunk.inflight = true;
+            await uploadChunk(nextChunk);
+          }
+        });
+
+        await Promise.all(workers);
+        if (task.status === 'cancelled') return;
 
         const completed = await api('/api/uploads/complete', {
           method: 'POST',
@@ -1367,6 +1460,7 @@
         task.status = 'done';
         task.completedAt = Date.now();
         task.error = '';
+        task.controllers.clear();
         updateTaskSpeed(task);
         renderUploadTasks();
         await loadMessages({ source: 'upload-complete', followBottom: isChatNearBottom(), preserveScroll: !isChatNearBottom() });
