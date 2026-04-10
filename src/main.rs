@@ -8,7 +8,7 @@ use std::{
 };
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
@@ -21,6 +21,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt};
+use tokio::io::AsyncSeekExt;
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use urlencoding::encode;
@@ -29,6 +30,7 @@ use urlencoding::encode;
 struct AppState {
     db_path: PathBuf,
     files_dir: PathBuf,
+    temp_dir: PathBuf,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     startup_config: StartupConfig,
     sessions: Arc<Mutex<HashMap<String, i64>>>,
@@ -84,6 +86,46 @@ struct DeleteResponse {
 struct RestartResponse {
     accepted: bool,
     message: String,
+}
+
+#[derive(Deserialize)]
+struct UploadInitRequest {
+    file_key: String,
+    file_name: String,
+    file_size: i64,
+    mime_type: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UploadInitResponse {
+    upload_id: String,
+    chunk_size: usize,
+    received_bytes: i64,
+    total_bytes: i64,
+    done: bool,
+}
+
+#[derive(Serialize)]
+struct UploadChunkResponse {
+    upload_id: String,
+    received_bytes: i64,
+    total_bytes: i64,
+    done: bool,
+}
+
+#[derive(Deserialize)]
+struct UploadCompleteRequest {
+    upload_id: String,
+}
+
+#[derive(Deserialize)]
+struct UploadCancelRequest {
+    upload_id: String,
+}
+
+#[derive(Serialize)]
+struct UploadCancelResponse {
+    cancelled: bool,
 }
 
 #[derive(Serialize)]
@@ -191,11 +233,18 @@ fn open_conn(db_path: &Path) -> Result<Connection, AppError> {
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库打开失败: {e}")))
 }
 
-fn init_storage(storage_root: &Path, files_dir: &Path, db_path: &Path) -> Result<(), AppError> {
+fn init_storage(
+    storage_root: &Path,
+    files_dir: &Path,
+    temp_dir: &Path,
+    db_path: &Path,
+) -> Result<(), AppError> {
     std::fs::create_dir_all(storage_root)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建存储目录失败: {e}")))?;
     std::fs::create_dir_all(files_dir)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建文件目录失败: {e}")))?;
+    std::fs::create_dir_all(temp_dir)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时目录失败: {e}")))?;
 
     let conn = open_conn(db_path)?;
     conn.execute_batch(
@@ -209,6 +258,18 @@ fn init_storage(storage_root: &Path, files_dir: &Path, db_path: &Path) -> Result
             file_size INTEGER,
             mime_type TEXT,
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS upload_sessions (
+            upload_id TEXT PRIMARY KEY,
+            file_key TEXT UNIQUE NOT NULL,
+            file_name TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            mime_type TEXT,
+            received_bytes INTEGER NOT NULL,
+            temp_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         ",
     )
@@ -412,6 +473,315 @@ async fn create_file_message(
     Ok(Json(dto))
 }
 
+async fn init_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UploadInitRequest>,
+) -> Result<Json<UploadInitResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    if payload.file_key.trim().is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "file_key 不能为空"));
+    }
+    if payload.file_name.trim().is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "file_name 不能为空"));
+    }
+    if payload.file_size <= 0 {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "file_size 必须大于 0"));
+    }
+
+    let chunk_size = 4 * 1024 * 1024;
+    let conn = open_conn(&state.db_path)?;
+
+    let existing = conn
+        .query_row(
+            "SELECT upload_id, file_name, file_size, mime_type, received_bytes, temp_path, status FROM upload_sessions WHERE file_key = ?1",
+            params![payload.file_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .ok();
+
+    if let Some((upload_id, file_name, file_size, _mime, mut received, temp_path, status)) = existing {
+        if status == "uploading" && file_name == payload.file_name && file_size == payload.file_size {
+            let meta_len = fs::metadata(&temp_path)
+                .await
+                .ok()
+                .and_then(|m| i64::try_from(m.len()).ok())
+                .unwrap_or(0);
+            if meta_len != received {
+                received = meta_len.min(payload.file_size);
+                conn.execute(
+                    "UPDATE upload_sessions SET received_bytes = ?1, updated_at = ?2 WHERE upload_id = ?3",
+                    params![received, now_iso(), upload_id],
+                )
+                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("更新会话失败: {e}")))?;
+            }
+            return Ok(Json(UploadInitResponse {
+                upload_id,
+                chunk_size,
+                received_bytes: received,
+                total_bytes: payload.file_size,
+                done: received >= payload.file_size,
+            }));
+        }
+
+        conn.execute(
+            "DELETE FROM upload_sessions WHERE upload_id = ?1",
+            params![upload_id],
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理旧会话失败: {e}")))?;
+
+        let _ = fs::remove_file(temp_path).await;
+    }
+
+    let upload_id = create_token();
+    let temp_path = state.temp_dir.join(format!("{upload_id}.part"));
+    fs::File::create(&temp_path)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时文件失败: {e}")))?;
+
+    conn.execute(
+        "INSERT INTO upload_sessions (upload_id, file_key, file_name, file_size, mime_type, received_bytes, temp_path, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'uploading', ?8, ?8)",
+        params![
+            upload_id,
+            payload.file_key,
+            payload.file_name,
+            payload.file_size,
+            payload.mime_type,
+            0_i64,
+            temp_path.to_string_lossy().to_string(),
+            now_iso()
+        ],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建上传会话失败: {e}")))?;
+
+    Ok(Json(UploadInitResponse {
+        upload_id,
+        chunk_size,
+        received_bytes: 0,
+        total_bytes: payload.file_size,
+        done: false,
+    }))
+}
+
+async fn upload_chunk(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<UploadChunkResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let upload_id = headers
+        .get("x-upload-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "缺少 x-upload-id"))?;
+    let start_byte = headers
+        .get("x-start-byte")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "缺少 x-start-byte"))?;
+
+    let conn = open_conn(&state.db_path)?;
+    let (file_size, mut received_bytes, temp_path, status): (i64, i64, String, String) = conn
+        .query_row(
+            "SELECT file_size, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1",
+            params![upload_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "上传会话不存在"))?;
+
+    if status != "uploading" {
+        return Err(AppError::new(StatusCode::CONFLICT, "上传会话不可用"));
+    }
+
+    let meta_len = fs::metadata(&temp_path)
+        .await
+        .ok()
+        .and_then(|m| i64::try_from(m.len()).ok())
+        .unwrap_or(0);
+    if meta_len != received_bytes {
+        received_bytes = meta_len.min(file_size);
+    }
+
+    if start_byte != received_bytes {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!("断点偏移不匹配，期望 {received_bytes}"),
+        ));
+    }
+
+    let incoming = i64::try_from(body.len())
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "分片过大"))?;
+    if received_bytes + incoming > file_size {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "分片超出文件总大小"));
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&temp_path)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("打开临时文件失败: {e}")))?;
+
+    file.seek(std::io::SeekFrom::Start(u64::try_from(start_byte).unwrap_or(0)))
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("定位临时文件失败: {e}")))?;
+    file.write_all(&body)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入分片失败: {e}")))?;
+
+    let new_received = received_bytes + incoming;
+    let done = new_received >= file_size;
+
+    conn.execute(
+        "UPDATE upload_sessions SET received_bytes = ?1, updated_at = ?2 WHERE upload_id = ?3",
+        params![new_received, now_iso(), upload_id],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("更新上传进度失败: {e}")))?;
+
+    Ok(Json(UploadChunkResponse {
+        upload_id,
+        received_bytes: new_received,
+        total_bytes: file_size,
+        done,
+    }))
+}
+
+async fn complete_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UploadCompleteRequest>,
+) -> Result<Json<MessageDto>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    let (file_name, file_size, mime_type, received_bytes, temp_path, status): (
+        String,
+        i64,
+        Option<String>,
+        i64,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT file_name, file_size, mime_type, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1",
+            params![payload.upload_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "上传会话不存在"))?;
+
+    if status != "uploading" {
+        return Err(AppError::new(StatusCode::CONFLICT, "上传会话不可完成"));
+    }
+
+    if received_bytes < file_size {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!("文件尚未上传完成，已上传 {received_bytes}/{file_size}"),
+        ));
+    }
+
+    let file_id = create_token();
+    let final_path = state.files_dir.join(&file_id);
+    if let Err(rename_err) = fs::rename(&temp_path, &final_path).await {
+        fs::copy(&temp_path, &final_path)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("搬运文件失败: {rename_err}; copy fallback failed: {e}"),
+                )
+            })?;
+        let _ = fs::remove_file(&temp_path).await;
+    }
+
+    conn.execute(
+        "INSERT INTO messages (kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            "file",
+            file_id,
+            file_name,
+            file_size,
+            mime_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+            now_iso()
+        ],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入消息失败: {e}")))?;
+
+    let message_id = conn.last_insert_rowid();
+
+    conn.execute(
+        "DELETE FROM upload_sessions WHERE upload_id = ?1",
+        params![payload.upload_id],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理上传会话失败: {e}")))?;
+
+    let mut stmt = conn
+        .prepare("SELECT * FROM messages WHERE id = ?1")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+    let dto = stmt
+        .query_row(params![message_id], row_to_dto)
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+
+    Ok(Json(dto))
+}
+
+async fn cancel_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UploadCancelRequest>,
+) -> Result<Json<UploadCancelResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    let temp_path: Option<String> = conn
+        .query_row(
+            "SELECT temp_path FROM upload_sessions WHERE upload_id = ?1",
+            params![payload.upload_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+
+    if let Some(path) = temp_path {
+        conn.execute(
+            "DELETE FROM upload_sessions WHERE upload_id = ?1",
+            params![payload.upload_id],
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除会话失败: {e}")))?;
+        let _ = fs::remove_file(path).await;
+        return Ok(Json(UploadCancelResponse { cancelled: true }));
+    }
+
+    Ok(Json(UploadCancelResponse { cancelled: false }))
+}
+
 async fn delete_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -595,16 +965,18 @@ async fn run() -> Result<(), AppError> {
         })
         .unwrap_or(true);
     let files_dir = storage_root.join("files");
+    let temp_dir = storage_root.join("tmp");
     let db_path = storage_root.join("messages.db");
 
     let initial_runtime_config = load_runtime_config(&config_path);
     let runtime_config = Arc::new(RwLock::new(initial_runtime_config));
 
-    init_storage(&storage_root, &files_dir, &db_path)?;
+    init_storage(&storage_root, &files_dir, &temp_dir, &db_path)?;
 
     let state = AppState {
         db_path,
         files_dir,
+        temp_dir,
         runtime_config: runtime_config.clone(),
         startup_config: StartupConfig { allow_web_restart },
         sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -626,6 +998,10 @@ async fn run() -> Result<(), AppError> {
         .route("/api/messages", get(list_messages).delete(delete_messages))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))
+        .route("/api/uploads/init", post(init_upload))
+        .route("/api/uploads/chunk", post(upload_chunk))
+        .route("/api/uploads/complete", post(complete_upload))
+        .route("/api/uploads/cancel", post(cancel_upload))
         .route("/api/admin/restart", post(restart_service))
         .route("/f/:file_id/*display_name", get(direct_file))
         .layer(DefaultBodyLimit::disable())

@@ -6,47 +6,96 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>云端传输助手</title>
+  <title>FastFile 云端传输助手</title>
   <style>
-    :root { color-scheme: dark; }
+    :root {
+      color-scheme: light;
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --panel-border: #dbe3ef;
+      --text: #243043;
+      --muted: #6a7a92;
+      --accent: #1d72ff;
+      --danger: #d04545;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: #0f1115;
-      color: #e7eaf0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
     }
     .page {
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      padding: 16px;
       gap: 12px;
+      padding: 14px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 10px;
     }
     .topbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      flex-wrap: wrap;
     }
-    .topbar .actions { display: flex; gap: 8px; }
-    .panel {
-      border: 1px solid #2b3140;
-      border-radius: 12px;
-      background: #171b23;
-      padding: 10px;
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button, input[type="password"], input[type="file"], select {
+      border-radius: 8px;
+      border: 1px solid #c8d3e3;
+      background: #fff;
+      color: #243043;
+      padding: 8px 11px;
+      font-size: 14px;
+      transition: transform .05s ease, box-shadow .12s ease, filter .12s ease;
+      box-shadow: 0 1px 0 rgba(25, 31, 43, .04);
+    }
+    button {
+      cursor: pointer;
+      user-select: none;
+    }
+    button:hover { box-shadow: 0 2px 8px rgba(40, 74, 140, .12); }
+    button:active {
+      transform: translateY(1px) scale(.99);
+      filter: brightness(.95);
+    }
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    .primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .danger {
+      background: #fff3f3;
+      color: var(--danger);
+      border-color: #f4bdbd;
     }
     #chat {
-      height: 58vh;
+      height: 56vh;
       overflow: auto;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      padding: 8px;
-      background: #0c0f14;
-      border-radius: 8px;
+      padding: 10px;
+      background: #f9fbff;
+      border: 1px solid #e4ebf5;
+      border-radius: 10px;
     }
     .item {
       display: flex;
@@ -54,78 +103,191 @@
       gap: 8px;
     }
     .bubble {
-      max-width: min(90%, 760px);
-      background: #1f2633;
-      border: 1px solid #313a4d;
+      max-width: min(92%, 820px);
       border-radius: 10px;
+      border: 1px solid #dce6f3;
+      background: #fff;
       padding: 10px;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    .meta { color: #98a3b8; font-size: 12px; margin-top: 6px; }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 6px;
+    }
     .thumb {
-      margin-top: 8px;
-      width: 240px;
+      width: 260px;
       max-width: 100%;
+      margin-top: 8px;
       border-radius: 8px;
-      border: 1px solid #30394d;
-      background: #0d1118;
+      border: 1px solid #d8e2f0;
+      background: #eef4fd;
     }
     textarea {
       width: 100%;
-      min-height: 96px;
+      min-height: 110px;
       resize: vertical;
+      border-radius: 10px;
+      border: 1px solid #ccd7e7;
       padding: 10px;
-      border-radius: 8px;
-      border: 1px solid #2b3140;
-      color: #e7eaf0;
-      background: #10141c;
       outline: none;
+      color: var(--text);
+      background: #fff;
+      font-size: 14px;
     }
-    button, input[type="password"], input[type="file"] {
-      border-radius: 8px;
-      border: 1px solid #344059;
-      background: #141b27;
-      color: #dce3f3;
-      padding: 8px 10px;
+    textarea:focus {
+      border-color: #8fb0ea;
+      box-shadow: 0 0 0 3px rgba(29, 114, 255, .1);
     }
-    button { cursor: pointer; }
+    .hidden { display: none !important; }
+    .footer-note { color: var(--muted); font-size: 12px; }
+
     .login-mask {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.85);
+      background: rgba(16, 24, 38, .45);
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 99;
+      z-index: 120;
     }
     .login-box {
       width: min(92vw, 360px);
-      background: #131824;
-      border: 1px solid #2e3650;
+      background: #fff;
+      border: 1px solid #d9e4f2;
       border-radius: 14px;
       padding: 18px;
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
-    .hidden { display: none !important; }
-    .danger {
-      border-color: #7c2d38;
-      background: #2c1318;
-      color: #ffc9d0;
+
+    .task-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(17, 27, 41, .25);
+      z-index: 110;
+      display: flex;
+      justify-content: center;
+      align-items: stretch;
+      padding: 16px;
     }
-    a { color: #8cc8ff; }
-    .footer-note { color: #95a1b9; font-size: 12px; }
+    .task-dialog {
+      width: min(960px, 100%);
+      background: #fff;
+      border-radius: 14px;
+      border: 1px solid #d8e2f0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .task-head {
+      padding: 12px;
+      border-bottom: 1px solid #e1e9f5;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .task-list {
+      flex: 1;
+      overflow: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .task-card {
+      border: 1px solid #dbe5f3;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+    }
+    .task-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    .task-name {
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .task-status { color: var(--muted); }
+    .progress {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #e6eefb;
+      overflow: hidden;
+      margin: 8px 0;
+    }
+    .bar {
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #4f8cff, #5fb5ff);
+      transition: width .2s ease;
+    }
+    .task-grid {
+      display: grid;
+      gap: 6px 14px;
+      grid-template-columns: repeat(3, minmax(130px, 1fr));
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    #manageTools {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    @media (max-width: 768px) {
+      .page { padding: 8px; gap: 8px; }
+      #chat { height: 50vh; }
+      .task-overlay { padding: 0; }
+      .task-dialog {
+        width: 100%;
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+      }
+      .task-grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+      button, input[type="file"], select {
+        min-height: 38px;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="login-mask" id="loginMask">
     <div class="login-box">
-      <strong>进入云端传输助手</strong>
+      <strong>进入 FastFile 云端传输助手</strong>
       <input id="passwordInput" type="password" placeholder="请输入密码" autocomplete="off" />
-      <button id="loginBtn">登录</button>
+      <button id="loginBtn" class="primary">登录</button>
       <div id="loginError" class="footer-note"></div>
+    </div>
+  </div>
+
+  <div class="task-overlay hidden" id="uploadTaskOverlay">
+    <div class="task-dialog">
+      <div class="task-head">
+        <strong>上传任务</strong>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="clearFinishedBtn">清理已完成</button>
+          <button id="hideTaskPanelBtn">隐藏到后台</button>
+        </div>
+      </div>
+      <div class="task-list" id="uploadTaskList"></div>
     </div>
   </div>
 
@@ -133,10 +295,26 @@
     <div class="topbar panel">
       <strong>聊天式文件传输助手</strong>
       <div class="actions">
+        <button id="uploadTasksBtn">上传任务</button>
         <button id="restartBtn" class="danger">重启服务</button>
         <button id="manageBtn">管理</button>
         <button id="refreshBtn">刷新</button>
         <button id="deleteBtn" class="danger hidden">删除已勾选</button>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="managePanel">
+      <div id="manageTools">
+        <button id="selectAllBtn">全选</button>
+        <button id="invertSelectBtn">反选</button>
+        <label>
+          筛选
+          <select id="filterSelect">
+            <option value="all">全部</option>
+            <option value="file">仅文件</option>
+            <option value="text">仅文字</option>
+          </select>
+        </label>
       </div>
     </div>
 
@@ -145,19 +323,19 @@
     </div>
 
     <div class="panel">
-      <textarea id="textInput" placeholder="输入要发送的文本（不限制长度）"></textarea>
+      <textarea id="textInput" placeholder="输入要发送的文本（Ctrl + Enter 发送）"></textarea>
       <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-        <button id="sendTextBtn">发送文本</button>
+        <button id="sendTextBtn" class="primary">发送文本</button>
       </div>
     </div>
 
     <div class="panel">
-      <input id="fileInput" type="file" />
+      <input id="fileInput" type="file" multiple />
       <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-        <button id="sendFileBtn">上传文件</button>
+        <button id="sendFileBtn" class="primary">上传文件</button>
       </div>
       <div class="footer-note" style="margin-top:8px;">
-        文件和文本只存云端，前端不做本地持久化。
+        支持多文件、断点续传、实时进度。任务可隐藏到后台继续执行。
       </div>
     </div>
   </div>
@@ -167,26 +345,86 @@
     const loginBtn = document.getElementById('loginBtn');
     const passwordInput = document.getElementById('passwordInput');
     const loginError = document.getElementById('loginError');
+
     const chat = document.getElementById('chat');
     const refreshBtn = document.getElementById('refreshBtn');
     const sendTextBtn = document.getElementById('sendTextBtn');
     const sendFileBtn = document.getElementById('sendFileBtn');
-    const restartBtn = document.getElementById('restartBtn');
     const textInput = document.getElementById('textInput');
     const fileInput = document.getElementById('fileInput');
+
+    const restartBtn = document.getElementById('restartBtn');
     const manageBtn = document.getElementById('manageBtn');
+    const managePanel = document.getElementById('managePanel');
+    const selectAllBtn = document.getElementById('selectAllBtn');
+    const invertSelectBtn = document.getElementById('invertSelectBtn');
+    const filterSelect = document.getElementById('filterSelect');
     const deleteBtn = document.getElementById('deleteBtn');
 
+    const uploadTasksBtn = document.getElementById('uploadTasksBtn');
+    const uploadTaskOverlay = document.getElementById('uploadTaskOverlay');
+    const uploadTaskList = document.getElementById('uploadTaskList');
+    const hideTaskPanelBtn = document.getElementById('hideTaskPanelBtn');
+    const clearFinishedBtn = document.getElementById('clearFinishedBtn');
+
     let token = '';
+    let allMessages = [];
     let manageMode = false;
+    let currentFilter = 'all';
     const selectedIds = new Set();
+
     let restartArmed = false;
     let restartArmTimer = null;
+    let deleteArmed = false;
+    let deleteArmTimer = null;
+
+    const uploadTasks = new Map();
+    let uploadTaskSeq = 1;
+
+    function formatBytes(bytes) {
+      const n = Number(bytes || 0);
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+      return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+
+    function formatDuration(sec) {
+      if (!Number.isFinite(sec) || sec < 0) return '--';
+      const s = Math.floor(sec % 60);
+      const m = Math.floor((sec / 60) % 60);
+      const h = Math.floor(sec / 3600);
+      return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`;
+    }
+
+    function formatSpeed(bps) {
+      if (!bps || !Number.isFinite(bps) || bps <= 0) return '--';
+      return `${formatBytes(bps)}/s`;
+    }
+
+    function taskStatusText(status) {
+      const map = {
+        queued: '排队中',
+        uploading: '上传中',
+        retrying: '重试中',
+        done: '完成',
+        error: '失败',
+        cancelled: '已取消'
+      };
+      return map[status] || status;
+    }
+
+    function getVisibleMessages() {
+      if (currentFilter === 'file') return allMessages.filter((m) => m.kind === 'file');
+      if (currentFilter === 'text') return allMessages.filter((m) => m.kind === 'text');
+      return allMessages;
+    }
 
     async function api(path, options = {}) {
       const cfg = { ...options };
       cfg.headers = { ...(options.headers || {}) };
       if (token) cfg.headers.Authorization = `Bearer ${token}`;
+
       const res = await fetch(path, cfg);
       if (res.status === 401) {
         token = '';
@@ -202,13 +440,6 @@
         throw new Error(msg);
       }
       return res.json();
-    }
-
-    function formatSize(size) {
-      if (size < 1024) return `${size} B`;
-      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-      if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
-      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
     }
 
     function renderMessage(msg) {
@@ -245,7 +476,7 @@
         direct.textContent = '直链下载';
         links.appendChild(direct);
         const size = document.createElement('span');
-        size.textContent = `  ·  ${formatSize(msg.file_size || 0)}`;
+        size.textContent = ` · ${formatBytes(msg.file_size || 0)}`;
         links.appendChild(size);
         bubble.appendChild(links);
 
@@ -274,23 +505,36 @@
       return row;
     }
 
-    async function loadMessages() {
-      const data = await api('/api/messages');
+    function renderMessages() {
+      const visible = getVisibleMessages();
       chat.innerHTML = '';
-      for (const m of data) {
-        chat.appendChild(renderMessage(m));
-      }
+      for (const m of visible) chat.appendChild(renderMessage(m));
       chat.scrollTop = chat.scrollHeight;
+    }
+
+    function updateManageUi() {
+      manageBtn.textContent = manageMode ? '退出管理' : '管理';
+      managePanel.classList.toggle('hidden', !manageMode);
+      deleteBtn.classList.toggle('hidden', !manageMode);
+      if (!manageMode) {
+        selectedIds.clear();
+        resetDeleteButton();
+      }
+      renderMessages();
+    }
+
+    async function loadMessages() {
+      allMessages = await api('/api/messages');
+      renderMessages();
     }
 
     async function login() {
       loginError.textContent = '';
-      const pass = passwordInput.value;
       try {
         const data = await api('/api/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: pass })
+          body: JSON.stringify({ password: passwordInput.value })
         });
         token = data.token;
         passwordInput.value = '';
@@ -313,27 +557,239 @@
       await loadMessages();
     }
 
-    async function sendFile() {
-      if (!fileInput.files.length) return;
-      const form = new FormData();
-      form.append('file', fileInput.files[0]);
-      await api('/api/messages/file', {
-        method: 'POST',
-        body: form
-      });
-      fileInput.value = '';
-      await loadMessages();
+    function openUploadTasksPanel() {
+      uploadTaskOverlay.classList.remove('hidden');
+      renderUploadTasks();
     }
 
-    async function deleteSelected() {
-      if (!selectedIds.size) return;
-      await api('/api/messages', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: Array.from(selectedIds) })
-      });
-      selectedIds.clear();
-      await loadMessages();
+    function hideUploadTasksPanel() {
+      uploadTaskOverlay.classList.add('hidden');
+    }
+
+    function makeFileKey(file) {
+      return `${file.name}::${file.size}::${file.lastModified}::${file.type}`;
+    }
+
+    function createTask(file) {
+      const id = uploadTaskSeq++;
+      const now = Date.now();
+      return {
+        id,
+        file,
+        fileKey: makeFileKey(file),
+        name: file.name,
+        totalBytes: file.size,
+        uploadedBytes: 0,
+        uploadId: '',
+        status: 'queued',
+        startedAt: now,
+        completedAt: null,
+        lastSampleAt: now,
+        lastSampleBytes: 0,
+        speedBps: 0,
+        etaSec: null,
+        error: '',
+        retries: 0,
+        controller: null,
+      };
+    }
+
+    function elapsedSec(task) {
+      const end = task.completedAt || Date.now();
+      return Math.max(0, (end - task.startedAt) / 1000);
+    }
+
+    function updateTaskSpeed(task) {
+      const now = Date.now();
+      const dt = (now - task.lastSampleAt) / 1000;
+      const db = task.uploadedBytes - task.lastSampleBytes;
+      if (dt > 0 && db >= 0) {
+        const instant = db / dt;
+        task.speedBps = task.speedBps > 0 ? task.speedBps * 0.7 + instant * 0.3 : instant;
+        const remain = task.totalBytes - task.uploadedBytes;
+        task.etaSec = task.speedBps > 1 ? remain / task.speedBps : null;
+      }
+      task.lastSampleAt = now;
+      task.lastSampleBytes = task.uploadedBytes;
+    }
+
+    function renderUploadTasks() {
+      if (!uploadTasks.size) {
+        uploadTaskList.innerHTML = '<div class="footer-note">暂无上传任务</div>';
+        return;
+      }
+
+      const list = Array.from(uploadTasks.values()).sort((a, b) => b.id - a.id);
+      uploadTaskList.innerHTML = '';
+      for (const t of list) {
+        const card = document.createElement('div');
+        card.className = 'task-card';
+        const progress = t.totalBytes > 0 ? Math.min(100, (t.uploadedBytes / t.totalBytes) * 100) : 0;
+        const elapsed = elapsedSec(t);
+        const remain = t.etaSec;
+        const totalEstimate = Number.isFinite(remain) ? elapsed + remain : null;
+
+        card.innerHTML = `
+          <div class="task-title">
+            <div class="task-name" title="${t.name}">${t.name}</div>
+            <div class="task-status">${taskStatusText(t.status)}</div>
+          </div>
+          <div class="progress"><div class="bar" style="width:${progress.toFixed(2)}%"></div></div>
+          <div class="task-grid">
+            <div>进度：${progress.toFixed(1)}%</div>
+            <div>已上传：${formatBytes(t.uploadedBytes)}</div>
+            <div>总大小：${formatBytes(t.totalBytes)}</div>
+            <div>目前耗时：${formatDuration(elapsed)}</div>
+            <div>预计剩余：${remain == null ? '--' : formatDuration(remain)}</div>
+            <div>预计总耗时：${totalEstimate == null ? '--' : formatDuration(totalEstimate)}</div>
+            <div>当前速度：${formatSpeed(t.speedBps)}</div>
+          </div>
+        `;
+
+        if (t.error) {
+          const err = document.createElement('div');
+          err.className = 'footer-note';
+          err.style.color = '#c43434';
+          err.textContent = `错误：${t.error}`;
+          card.appendChild(err);
+        }
+
+        if (t.status === 'uploading' || t.status === 'retrying' || t.status === 'queued') {
+          const cancel = document.createElement('button');
+          cancel.className = 'danger';
+          cancel.textContent = '取消上传';
+          cancel.onclick = () => cancelTask(t.id);
+          cancel.style.marginTop = '8px';
+          card.appendChild(cancel);
+        }
+
+        uploadTaskList.appendChild(card);
+      }
+    }
+
+    async function cancelTask(taskId) {
+      const task = uploadTasks.get(taskId);
+      if (!task) return;
+      task.status = 'cancelled';
+      if (task.controller) task.controller.abort();
+      if (task.uploadId) {
+        try {
+          await api('/api/uploads/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upload_id: task.uploadId })
+          });
+        } catch (_) {}
+      }
+      renderUploadTasks();
+    }
+
+    async function processUploadTask(task) {
+      const CHUNK_FALLBACK = 4 * 1024 * 1024;
+      let chunkSize = CHUNK_FALLBACK;
+
+      try {
+        const init = await api('/api/uploads/init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_key: task.fileKey,
+            file_name: task.file.name,
+            file_size: task.file.size,
+            mime_type: task.file.type || null,
+          })
+        });
+
+        task.uploadId = init.upload_id;
+        task.uploadedBytes = Number(init.received_bytes || 0);
+        chunkSize = Number(init.chunk_size || CHUNK_FALLBACK);
+        task.status = 'uploading';
+        updateTaskSpeed(task);
+        renderUploadTasks();
+
+        while (task.uploadedBytes < task.totalBytes) {
+          if (task.status === 'cancelled') return;
+
+          const start = task.uploadedBytes;
+          const end = Math.min(task.totalBytes, start + chunkSize);
+          const blob = task.file.slice(start, end);
+          task.controller = new AbortController();
+
+          try {
+            const chunkResp = await api('/api/uploads/chunk', {
+              method: 'POST',
+              headers: {
+                'X-Upload-Id': task.uploadId,
+                'X-Start-Byte': String(start)
+              },
+              body: blob,
+              signal: task.controller.signal,
+            });
+
+            task.uploadedBytes = Number(chunkResp.received_bytes || task.uploadedBytes);
+            task.retries = 0;
+            task.status = 'uploading';
+            updateTaskSpeed(task);
+            renderUploadTasks();
+          } catch (err) {
+            if (task.status === 'cancelled') return;
+            task.retries += 1;
+            if (task.retries > 5) throw err;
+
+            task.status = 'retrying';
+            task.error = `网络波动，重试第 ${task.retries} 次`;
+            renderUploadTasks();
+            await new Promise((r) => setTimeout(r, Math.min(1600, 250 * task.retries)));
+
+            const resumed = await api('/api/uploads/init', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                file_key: task.fileKey,
+                file_name: task.file.name,
+                file_size: task.file.size,
+                mime_type: task.file.type || null,
+              })
+            });
+            task.uploadId = resumed.upload_id;
+            task.uploadedBytes = Number(resumed.received_bytes || task.uploadedBytes);
+          }
+        }
+
+        await api('/api/uploads/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ upload_id: task.uploadId })
+        });
+
+        task.status = 'done';
+        task.completedAt = Date.now();
+        task.error = '';
+        updateTaskSpeed(task);
+        renderUploadTasks();
+        await loadMessages();
+      } catch (err) {
+        if (task.status !== 'cancelled') {
+          task.status = 'error';
+          task.error = err?.message || String(err);
+          task.completedAt = Date.now();
+          renderUploadTasks();
+        }
+      }
+    }
+
+    async function sendFiles() {
+      const files = Array.from(fileInput.files || []);
+      if (!files.length) return;
+
+      openUploadTasksPanel();
+      for (const file of files) {
+        const task = createTask(file);
+        uploadTasks.set(task.id, task);
+        renderUploadTasks();
+        processUploadTask(task);
+      }
+      fileInput.value = '';
     }
 
     function resetRestartButton() {
@@ -345,48 +801,115 @@
       }
     }
 
-    async function requestRestart() {
+    async function handleRestartClick() {
+      if (!restartArmed) {
+        restartArmed = true;
+        restartBtn.textContent = '二次确认重启（5秒）';
+        restartArmTimer = setTimeout(resetRestartButton, 5000);
+        return;
+      }
       const result = await api('/api/admin/restart', { method: 'POST' });
       restartBtn.disabled = true;
       restartBtn.textContent = '正在重启...';
       alert(result.message || '重启请求已发送');
     }
 
-    async function handleRestartClick() {
-      if (!restartArmed) {
-        restartArmed = true;
-        restartBtn.textContent = '二次确认重启（5秒）';
-        restartArmTimer = setTimeout(() => {
-          resetRestartButton();
-        }, 5000);
+    function resetDeleteButton() {
+      deleteArmed = false;
+      deleteBtn.textContent = '删除已勾选';
+      if (deleteArmTimer) {
+        clearTimeout(deleteArmTimer);
+        deleteArmTimer = null;
+      }
+    }
+
+    async function deleteSelected() {
+      if (!selectedIds.size) {
+        alert('请先勾选要删除的记录');
         return;
       }
-      await requestRestart();
+      await api('/api/messages', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selectedIds) })
+      });
+      selectedIds.clear();
+      resetDeleteButton();
+      await loadMessages();
+    }
+
+    async function handleDeleteClick() {
+      if (!deleteArmed) {
+        deleteArmed = true;
+        deleteBtn.textContent = '二次确认删除（5秒）';
+        deleteArmTimer = setTimeout(resetDeleteButton, 5000);
+        return;
+      }
+      await deleteSelected();
+    }
+
+    function selectAllVisible() {
+      for (const m of getVisibleMessages()) selectedIds.add(m.id);
+      renderMessages();
+    }
+
+    function invertVisible() {
+      for (const m of getVisibleMessages()) {
+        if (selectedIds.has(m.id)) selectedIds.delete(m.id);
+        else selectedIds.add(m.id);
+      }
+      renderMessages();
     }
 
     loginBtn.onclick = login;
     refreshBtn.onclick = () => loadMessages().catch((e) => alert(e.message));
     sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
-    sendFileBtn.onclick = () => sendFile().catch((e) => alert(e.message));
+    sendFileBtn.onclick = () => sendFiles().catch((e) => alert(e.message));
+
     restartBtn.onclick = () => handleRestartClick().catch((e) => {
       resetRestartButton();
       alert(e.message);
     });
-    deleteBtn.onclick = () => deleteSelected().catch((e) => alert(e.message));
+
+    manageBtn.onclick = () => {
+      manageMode = !manageMode;
+      updateManageUi();
+    };
+
+    deleteBtn.onclick = () => handleDeleteClick().catch((e) => alert(e.message));
+    selectAllBtn.onclick = selectAllVisible;
+    invertSelectBtn.onclick = invertVisible;
+    filterSelect.onchange = () => {
+      currentFilter = filterSelect.value;
+      renderMessages();
+    };
+
+    uploadTasksBtn.onclick = openUploadTasksPanel;
+    hideTaskPanelBtn.onclick = hideUploadTasksPanel;
+    clearFinishedBtn.onclick = () => {
+      for (const [id, t] of uploadTasks.entries()) {
+        if (t.status === 'done' || t.status === 'cancelled' || t.status === 'error') {
+          uploadTasks.delete(id);
+        }
+      }
+      renderUploadTasks();
+    };
+
+    textInput.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        sendText().catch((err) => alert(err.message));
+      }
+    });
+
     passwordInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') login();
     });
 
-    manageBtn.onclick = () => {
-      manageMode = !manageMode;
-      if (!manageMode) selectedIds.clear();
-      deleteBtn.classList.toggle('hidden', !manageMode);
-      loadMessages().catch((e) => alert(e.message));
-    };
-
     setInterval(() => {
       if (token) loadMessages().catch(() => {});
-    }, 5000);
+      if (uploadTasks.size) renderUploadTasks();
+    }, 1200);
   </script>
 </body>
 </html>
