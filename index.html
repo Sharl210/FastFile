@@ -407,13 +407,14 @@
       background: #fff;
       border-radius: 14px;
       border: 1px solid #d4e1f2;
-      padding: 12px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 0;
       outline: none;
+      overflow: hidden;
     }
     .media-head {
+      padding: 12px 12px 10px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -421,26 +422,225 @@
       flex-wrap: wrap;
     }
     .media-stage {
-      flex: 1;
+      flex: 0 0 auto;
       min-height: 280px;
       display: flex;
+      align-self: center;
       align-items: center;
       justify-content: center;
-      background: #f2f6fd;
-      border: 1px solid #e0e9f7;
-      border-radius: 10px;
+      background: #0e1624;
       overflow: hidden;
+    }
+    .media-dialog.audio-mode {
+      background: #000;
+      border: 1px solid rgba(255,255,255,0.06);
+      box-shadow: none;
+    }
+    .media-dialog.audio-mode .media-head {
+      display: none;
+    }
+    .media-dialog.audio-mode #mediaViewerHint {
+      display: none;
+    }
+    .media-dialog.audio-mode .media-stage {
+      background: #000;
     }
     .media-stage img,
     .media-stage video {
       width: 100%;
       max-height: 72vh;
       object-fit: contain;
-      background: #f2f6fd;
+      background: #0e1624;
+    }
+    .audio-card {
+      width: 260px;
+      max-width: 100%;
+      min-height: 152px;
+      margin-top: 8px;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid #d8e2f0;
+      background: linear-gradient(135deg, #15314f 0%, #3b5d8c 55%, #7bb7ff 100%);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 8px;
+      position: relative;
+      overflow: hidden;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    .audio-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--audio-wave-bg, linear-gradient(135deg, rgba(255,255,255,.14) 0%, rgba(255,255,255,.04) 100%));
+      background-size: cover;
+      background-position: center;
+      opacity: .92;
+      pointer-events: none;
+    }
+    .audio-card::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(7, 14, 24, .05) 0%, rgba(7, 14, 24, .62) 100%);
+      pointer-events: none;
+    }
+    .audio-card > * {
+      position: relative;
+      z-index: 1;
+    }
+    .audio-card-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      opacity: .95;
+      pointer-events: none;
+    }
+    .audio-card-name {
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.5;
+      word-break: break-word;
+      text-shadow: 0 1px 2px rgba(0,0,0,.25);
+    }
+    .audio-card-meta {
+      font-size: 12px;
+      color: rgba(255,255,255,.88);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      text-shadow: 0 1px 2px rgba(0,0,0,.2);
+    }
+    .audio-card-badge {
+      align-self: flex-start;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(255,255,255,.16);
+      color: rgba(255,255,255,.96);
+      backdrop-filter: blur(8px);
+    }
+    .audio-view {
+      width: 100%;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+      border-radius: 28px;
+      background: #000;
+      border: 0;
+      box-shadow: none;
+    }
+    .audio-shell-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .audio-shell-info {
+      position: absolute;
+      left: 34px;
+      bottom: 86px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      color: #fff;
+      z-index: 2;
+      text-shadow: 0 1px 2px rgba(0,0,0,.3);
+    }
+    .audio-shell-name {
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .audio-shell-meta {
+      font-size: 14px;
+      color: rgba(255,255,255,0.85);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .audio-shell-footer {
+      position: absolute;
+      left: 34px;
+      right: 34px;
+      bottom: 18px;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: auto auto 1fr auto;
+      align-items: center;
+      gap: 16px;
+      color: #fff;
+    }
+    .audio-shell-progress {
+      position: relative;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(79, 216, 255, 0.18);
+      overflow: visible;
+      cursor: pointer;
+    }
+    .audio-shell-progress-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0;
+      border-radius: inherit;
+      background: #28d9ff;
+      box-shadow: 0 0 10px rgba(40, 217, 255, 0.45);
+    }
+    .audio-shell-progress-knob {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      transform: translate(-50%, -50%);
+      border: 2px solid #28d9ff;
+      background: #04131b;
+      box-shadow: 0 0 14px rgba(40, 217, 255, 0.45);
+    }
+    .audio-shell-controls {
+      display: contents;
+    }
+    .audio-shell-btn {
+      border: 0;
+      background: transparent;
+      color: #fff;
+      font-size: 24px;
+      padding: 0;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .audio-shell-time {
+      font-size: 14px;
+      color: rgba(255,255,255,0.86);
+      min-width: 56px;
+      font-variant-numeric: tabular-nums;
+    }
+    .audio-shell-volume-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      justify-self: end;
+    }
+    .audio-shell-volume {
+      width: 96px;
+      accent-color: #28d9ff;
     }
     .media-stage .media-placeholder {
-      min-height: 240px;
-      margin: 18px;
+      width: 100%;
+      height: 100%;
+      min-height: 280px;
+      margin: 0;
+      border-radius: 0;
+      border: 0;
     }
 
     @media (max-width: 768px) {
@@ -552,10 +752,12 @@
           <button id="plusMenuBtn" title="上传菜单">＋</button>
           <div id="plusMenu" class="panel hidden" style="position:absolute; top:42px; left:0; min-width:180px; z-index:70; padding:8px;">
             <button id="pickImageBtn" style="width:100%; text-align:left; margin-bottom:6px;">图片上传</button>
-            <button id="pickVideoBtn" style="width:100%; text-align:left;">视频上传</button>
+            <button id="pickVideoBtn" style="width:100%; text-align:left; margin-bottom:6px;">视频上传</button>
+            <button id="pickAudioBtn" style="width:100%; text-align:left;">音频上传</button>
           </div>
           <input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden" />
           <input id="videoUploadInput" type="file" accept="video/*" multiple class="hidden" />
+          <input id="audioUploadInput" type="file" accept="audio/*,.flac,.wav,.aac,.m4a,.mp3,.ogg,.opus" multiple class="hidden" />
         </div>
         <button id="sendTextBtn" class="primary">发送文本</button>
       </div>
@@ -589,8 +791,10 @@
     const plusMenu = document.getElementById('plusMenu');
     const pickImageBtn = document.getElementById('pickImageBtn');
     const pickVideoBtn = document.getElementById('pickVideoBtn');
+    const pickAudioBtn = document.getElementById('pickAudioBtn');
     const imageUploadInput = document.getElementById('imageUploadInput');
     const videoUploadInput = document.getElementById('videoUploadInput');
+    const audioUploadInput = document.getElementById('audioUploadInput');
     const sendFileBtn = document.getElementById('sendFileBtn');
     const textInput = document.getElementById('textInput');
     const fileInput = document.getElementById('fileInput');
@@ -651,12 +855,16 @@
     const selfMessageIds = new Set();
     const mediaProgressCache = new Map();
     const mediaCompatibilityCache = new Map();
+    const audioVisualCache = new Map();
+    const audioVisualPending = new Map();
+    let activeAudioVisualizerCleanup = null;
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
 
     const SCROLL_EDGE_THRESHOLD = 24;
-    const SMOOTH_SCROLL_DURATION = 1500;
+    const SMOOTH_SCROLL_DURATION = 1000;
+    const MEDIA_VIEWPORT_MAX_RATIO = 0.9;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -847,6 +1055,9 @@
       if (kind === 'video') {
         return `当前浏览器无法纯前端解码这个${ext ? ` ${ext.toUpperCase()}` : ''}视频，继续播放只会出现有声音没画面。`;
       }
+      if (kind === 'audio') {
+        return `当前浏览器无法纯前端解码这个${ext ? ` ${ext.toUpperCase()}` : ''}音频。`;
+      }
       return `当前浏览器无法纯前端预览这个${ext ? ` ${ext.toUpperCase()}` : ''}图片格式。`;
     }
 
@@ -884,6 +1095,450 @@
       placeholder.title = '点击查看详情';
       placeholder.onclick = () => openMediaByMessageId(item.id).catch(() => {});
       node.replaceWith(placeholder);
+    }
+
+    function formatAudioMime(mimeType, fileName) {
+      const ext = getFileExtension(fileName);
+      if (ext) return ext.toUpperCase();
+      if (!mimeType) return 'AUDIO';
+      const slash = mimeType.split('/')[1] || mimeType;
+      return slash.toUpperCase();
+    }
+
+    function getAudioVisual(item) {
+      const key = getMediaCacheKey(item);
+      return key ? audioVisualCache.get(key) || null : null;
+    }
+
+    function setAudioVisual(item, value) {
+      const key = getMediaCacheKey(item);
+      if (!key) return;
+      audioVisualCache.set(key, value);
+    }
+
+    function createAudioCard(item, { compact = false, withCanvas = false } = {}) {
+      const card = document.createElement('div');
+      card.className = compact ? 'audio-card thumb' : 'audio-card';
+      card.style.setProperty('--audio-wave-bg', 'linear-gradient(135deg, rgba(255,255,255,.14) 0%, rgba(255,255,255,.04) 100%)');
+
+      if (withCanvas) {
+        const canvas = document.createElement('canvas');
+        canvas.className = 'audio-card-canvas';
+        card.appendChild(canvas);
+      }
+
+      const badge = document.createElement('div');
+      badge.className = 'audio-card-badge';
+      badge.textContent = compact ? '音频' : '音频播放';
+      card.appendChild(badge);
+
+      const title = document.createElement('div');
+      title.className = 'audio-card-name';
+      title.textContent = item?.file_name || '音频文件';
+      card.appendChild(title);
+
+      const meta = document.createElement('div');
+      meta.className = 'audio-card-meta';
+      const size = document.createElement('span');
+      size.textContent = formatBytes(item?.file_size || 0);
+      const fmt = document.createElement('span');
+      fmt.textContent = formatAudioMime(item?.mime_type, item?.file_name);
+      meta.appendChild(size);
+      meta.appendChild(fmt);
+      card.appendChild(meta);
+
+      const visual = getAudioVisual(item);
+      if (visual?.background) {
+        card.style.setProperty('--audio-wave-bg', `url(${visual.background})`);
+      }
+      return card;
+    }
+
+    function renderWaveformBackground(channelData, width = 1200, height = 360) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#13273f';
+      ctx.fillRect(0, 0, width, height);
+
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0, '#ffb35c');
+      gradient.addColorStop(0.24, '#ffe45e');
+      gradient.addColorStop(0.5, '#8dff65');
+      gradient.addColorStop(0.74, '#5dd6ff');
+      gradient.addColorStop(1, '#9f8dff');
+
+      const bars = 8;
+      const spanWidth = width * 0.58;
+      const step = Math.max(1, Math.floor(channelData.length / bars));
+      const barWidth = spanWidth / bars;
+      const floorY = height * 0.94;
+      const maxBarHeight = height * 0.9;
+      ctx.fillStyle = gradient;
+
+      for (let i = 0; i < bars; i += 1) {
+        const start = i * step;
+        const end = Math.min(channelData.length, start + step);
+        let peak = 0;
+        for (let j = start; j < end; j += 1) {
+          const value = Math.abs(channelData[j] || 0);
+          if (value > peak) peak = value;
+        }
+        const minHeight = Math.max(18, maxBarHeight * 0.1);
+        const barHeight = Math.max(minHeight, peak * maxBarHeight);
+        const x = i * barWidth + barWidth * 0.14;
+        const w = Math.max(20, barWidth * 0.58);
+        const y = floorY - barHeight;
+        const r = Math.min(8, w / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, floorY, r);
+        ctx.arcTo(x + w, floorY, x, floorY, r);
+        ctx.arcTo(x, floorY, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      const lineGradient = ctx.createLinearGradient(0, floorY, width, floorY);
+      lineGradient.addColorStop(0, 'rgba(106, 213, 255, 0.65)');
+      lineGradient.addColorStop(1, 'rgba(196, 217, 255, 0.28)');
+      ctx.fillStyle = lineGradient;
+      ctx.fillRect(0, floorY + 8, width, 3);
+
+      return canvas.toDataURL('image/png');
+    }
+
+    async function ensureAudioVisual(item) {
+      const key = getMediaCacheKey(item);
+      if (!key || audioVisualCache.has(key)) return audioVisualCache.get(key);
+      if (audioVisualPending.has(key)) return audioVisualPending.get(key);
+
+      const pending = (async () => {
+        try {
+          const response = await fetch(item.file_url);
+          if (!response.ok) throw new Error('音频读取失败');
+          const buffer = await response.arrayBuffer();
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const decoded = await audioContext.decodeAudioData(buffer.slice(0));
+          const channelData = decoded.getChannelData(0);
+          const payload = { background: renderWaveformBackground(channelData), duration: decoded.duration };
+          setAudioVisual(item, payload);
+          await audioContext.close().catch(() => {});
+          return payload;
+        } catch (_) {
+          const payload = { background: null, duration: null };
+          setAudioVisual(item, payload);
+          return payload;
+        } finally {
+          audioVisualPending.delete(key);
+        }
+      })();
+
+      audioVisualPending.set(key, pending);
+      return pending;
+    }
+
+    function enhanceAudioCard(card, item) {
+      ensureAudioVisual(item).then((visual) => {
+        if (!visual?.background || !card.isConnected) return;
+        card.style.setProperty('--audio-wave-bg', `url(${visual.background})`);
+      }).catch(() => {});
+    }
+
+    function attachAudioCompatibility(audio, item, onUnsupported) {
+      const cached = getMediaCompatibility(item);
+      if (cached?.kind === 'audio' && cached.supported === false) {
+        onUnsupported();
+        return;
+      }
+
+      let resolved = false;
+      const markSupported = () => {
+        if (resolved) return true;
+        resolved = true;
+        setMediaCompatibility(item, { kind: 'audio', supported: true });
+        return true;
+      };
+      const markUnsupported = () => {
+        if (resolved) return;
+        resolved = true;
+        setMediaCompatibility(item, { kind: 'audio', supported: false });
+        onUnsupported();
+      };
+
+      audio.addEventListener('loadedmetadata', () => {
+        markSupported();
+      }, { once: true });
+      audio.addEventListener('canplay', () => {
+        markSupported();
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        markUnsupported();
+      }, { once: true });
+    }
+
+    function playMediaElement(media) {
+      const tryPlay = () => media.play().catch(() => {});
+      requestAnimationFrame(tryPlay);
+      media.addEventListener('loadeddata', tryPlay, { once: true });
+      media.addEventListener('canplay', tryPlay, { once: true });
+    }
+
+    function formatMediaClock(sec) {
+      if (!Number.isFinite(sec) || sec < 0) return '0:00';
+      const total = Math.floor(sec);
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function createAudioShell(item, audio) {
+      const shell = document.createElement('div');
+      shell.className = 'audio-view';
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'audio-shell-canvas';
+      shell.appendChild(canvas);
+
+      const info = document.createElement('div');
+      info.className = 'audio-shell-info';
+      const name = document.createElement('div');
+      name.className = 'audio-shell-name';
+      name.textContent = item.file_name || '音频文件';
+      const meta = document.createElement('div');
+      meta.className = 'audio-shell-meta';
+      meta.innerHTML = `<span>${formatMediaClock(0)}</span><span>${formatAudioMime(item.mime_type, item.file_name)}</span>`;
+      info.appendChild(name);
+      info.appendChild(meta);
+      shell.appendChild(info);
+
+      const footer = document.createElement('div');
+      footer.className = 'audio-shell-footer';
+
+      const current = document.createElement('div');
+      current.className = 'audio-shell-time';
+      current.textContent = '0:00 / 0:00';
+      const progress = document.createElement('div');
+      progress.className = 'audio-shell-progress';
+      const progressFill = document.createElement('div');
+      progressFill.className = 'audio-shell-progress-fill';
+      const progressKnob = document.createElement('div');
+      progressKnob.className = 'audio-shell-progress-knob';
+      progress.appendChild(progressFill);
+      progress.appendChild(progressKnob);
+
+      const controls = document.createElement('div');
+      controls.className = 'audio-shell-controls';
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = 'audio-shell-btn';
+      toggleBtn.type = 'button';
+      toggleBtn.textContent = '❚❚';
+      const volumeWrap = document.createElement('div');
+      volumeWrap.className = 'audio-shell-volume-wrap';
+      const volumeBtn = document.createElement('button');
+      volumeBtn.className = 'audio-shell-btn';
+      volumeBtn.type = 'button';
+      volumeBtn.textContent = '🔊';
+      const volume = document.createElement('input');
+      volume.className = 'audio-shell-volume';
+      volume.type = 'range';
+      volume.min = '0';
+      volume.max = '100';
+      volume.step = '1';
+      volume.value = String(Math.round((audio.volume || 1) * 100));
+      volumeWrap.appendChild(volumeBtn);
+      volumeWrap.appendChild(volume);
+
+      controls.appendChild(toggleBtn);
+      controls.appendChild(current);
+      controls.appendChild(progress);
+      controls.appendChild(volumeWrap);
+      footer.appendChild(controls);
+      shell.appendChild(footer);
+
+      const sync = () => {
+        const total = Number.isFinite(audio.duration) ? audio.duration : 0;
+        const now = audio.currentTime || 0;
+        current.textContent = `${formatMediaClock(now)} / ${formatMediaClock(total)}`;
+        const ratio = total > 0 ? now / total : 0;
+        progressFill.style.width = `${ratio * 100}%`;
+        progressKnob.style.left = `${ratio * 100}%`;
+        toggleBtn.textContent = audio.paused ? '▶' : '❚❚';
+        volumeBtn.textContent = audio.muted || audio.volume === 0 ? '🔈' : '🔊';
+      };
+
+      const seek = (clientX) => {
+        const rect = progress.getBoundingClientRect();
+        const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          audio.currentTime = ratio * audio.duration;
+          sync();
+        }
+      };
+
+      progress.addEventListener('click', (e) => seek(e.clientX));
+      toggleBtn.onclick = () => {
+        if (audio.paused) audio.play().catch(() => {});
+        else audio.pause();
+      };
+      volume.addEventListener('input', () => {
+        audio.muted = false;
+        audio.volume = Number(volume.value) / 100;
+        sync();
+      });
+      volumeBtn.onclick = () => {
+        audio.muted = !audio.muted;
+        sync();
+      };
+
+      ['play', 'pause', 'timeupdate', 'loadedmetadata', 'volumechange', 'ended'].forEach((eventName) => {
+        audio.addEventListener(eventName, sync);
+      });
+      sync();
+
+      return { shell, canvas, meta, sync };
+    }
+
+    function cleanupActiveAudioVisualizer() {
+      if (typeof activeAudioVisualizerCleanup === 'function') {
+        activeAudioVisualizerCleanup();
+      }
+      activeAudioVisualizerCleanup = null;
+    }
+
+    function resetMediaDialogLayout() {
+      mediaDialog.style.width = '';
+      mediaStage.style.width = '';
+      mediaStage.style.height = '';
+      mediaDialog.classList.remove('audio-mode');
+    }
+
+    function fitMediaDialogToAspect(width, height) {
+      if (!width || !height) return;
+      const viewportWidth = Math.min(window.innerWidth * MEDIA_VIEWPORT_MAX_RATIO, 980);
+      const viewportHeight = Math.max(280, Math.min(window.innerHeight * MEDIA_VIEWPORT_MAX_RATIO - 110, window.innerHeight * MEDIA_VIEWPORT_MAX_RATIO));
+      const scale = Math.min(viewportWidth / width, viewportHeight / height);
+      const fittedWidth = Math.max(320, Math.round(width * scale));
+      const fittedHeight = Math.max(240, Math.round(height * scale));
+      mediaStage.style.width = `${fittedWidth}px`;
+      mediaStage.style.height = `${fittedHeight}px`;
+      mediaDialog.style.width = `${Math.max(420, Math.min(viewportWidth, fittedWidth + 28))}px`;
+    }
+
+    function fitMediaDialogForAudio() {
+      const viewportWidth = window.innerWidth * MEDIA_VIEWPORT_MAX_RATIO;
+      const viewportHeight = Math.max(420, Math.min(window.innerHeight * 0.68, window.innerHeight * MEDIA_VIEWPORT_MAX_RATIO - 110));
+      const ergonomicAspect = Math.min(1.85, Math.max(1.45, (window.innerWidth / Math.max(window.innerHeight, 1)) * 1.02));
+      let stageWidth = viewportWidth;
+      let stageHeight = Math.max(viewportHeight, stageWidth / ergonomicAspect);
+      if (stageHeight > window.innerHeight * MEDIA_VIEWPORT_MAX_RATIO - 110) {
+        stageHeight = window.innerHeight * MEDIA_VIEWPORT_MAX_RATIO - 110;
+      }
+      stageWidth = Math.max(420, Math.round(stageWidth));
+      stageHeight = Math.max(420, Math.round(stageHeight));
+      mediaStage.style.width = `${stageWidth}px`;
+      mediaStage.style.height = `${stageHeight}px`;
+      mediaDialog.style.width = `${Math.max(420, Math.min(viewportWidth, stageWidth + 28))}px`;
+    }
+
+    function attachAudioVisualizer(audio, canvas, meta) {
+      cleanupActiveAudioVisualizer();
+      if (!canvas || !window.AudioContext) return;
+
+      const ctx = canvas.getContext('2d');
+      const audioContext = new window.AudioContext();
+      const source = audioContext.createMediaElementSource(audio);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(audioContext.destination);
+      const samples = new Uint8Array(analyser.frequencyBinCount);
+      let rafId = 0;
+      let stopped = false;
+
+      const resizeCanvas = () => {
+        const host = canvas.parentElement;
+        if (!host) return;
+        const ratio = window.devicePixelRatio || 1;
+        const width = Math.max(1, Math.floor(host.clientWidth * ratio));
+        const height = Math.max(1, Math.floor(host.clientHeight * ratio));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          canvas.style.width = `${host.clientWidth}px`;
+          canvas.style.height = `${host.clientHeight}px`;
+        }
+      };
+
+      const draw = () => {
+        if (stopped) return;
+        resizeCanvas();
+        analyser.getByteFrequencyData(samples);
+        const width = canvas.width;
+        const height = canvas.height;
+        ctx.clearRect(0, 0, width, height);
+        const progress = audio.duration ? Math.min(1, audio.currentTime / audio.duration) : 0;
+        const playedWidth = width * progress;
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.fillRect(0, 0, playedWidth, height);
+        ctx.fillStyle = 'rgba(4, 10, 18, 0.08)';
+        ctx.fillRect(playedWidth, 0, width - playedWidth, height);
+
+        const bars = 8;
+      const spanWidth = width * 0.28;
+      const barWidth = spanWidth / bars;
+        const gradient = ctx.createLinearGradient(0, 0, width, 0);
+        gradient.addColorStop(0, 'rgba(255, 184, 92, 0.92)');
+        gradient.addColorStop(0.22, 'rgba(255, 232, 94, 0.96)');
+        gradient.addColorStop(0.5, 'rgba(141, 255, 101, 0.94)');
+        gradient.addColorStop(0.76, 'rgba(93, 214, 255, 0.92)');
+        gradient.addColorStop(1, 'rgba(159, 141, 255, 0.9)');
+        ctx.fillStyle = gradient;
+        const floorY = height * 0.94;
+        const maxBarHeight = height * 0.88;
+
+        for (let i = 0; i < bars; i += 1) {
+          const sampleIndex = Math.min(samples.length - 1, Math.floor(i * samples.length / bars));
+          const sample = samples[sampleIndex] / 255;
+          const barHeight = Math.max(height * 0.12, sample * maxBarHeight);
+        const x = i * barWidth + barWidth * 0.08;
+          const y = floorY - barHeight;
+          const w = Math.max(20, barWidth * 0.58);
+          const radius = Math.min(6, w / 2);
+          ctx.beginPath();
+          ctx.moveTo(x + radius, y);
+          ctx.arcTo(x + w, y, x + w, floorY, radius);
+          ctx.arcTo(x + w, floorY, x, floorY, radius);
+          ctx.arcTo(x, floorY, x, y, radius);
+          ctx.arcTo(x, y, x + w, y, radius);
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        ctx.fillStyle = 'rgba(86, 220, 255, 0.38)';
+        ctx.fillRect(0, floorY + 8, width, 2.5);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.fillRect(Math.max(0, playedWidth - 1), 0, 2, height);
+        if (meta) {
+          meta.firstElementChild.textContent = formatMediaClock(audio.currentTime || 0);
+        }
+        rafId = requestAnimationFrame(draw);
+      };
+
+      audio.addEventListener('play', () => {
+        audioContext.resume().catch(() => {});
+      });
+      draw();
+
+      activeAudioVisualizerCleanup = () => {
+        stopped = true;
+        if (rafId) cancelAnimationFrame(rafId);
+        source.disconnect();
+        analyser.disconnect();
+        audioContext.close().catch(() => {});
+      };
     }
 
     function attachImageCompatibility(img, item, compact = false) {
@@ -1130,6 +1785,12 @@
             openMediaByMessageId(msg.id).catch(() => {});
           };
           bubble.appendChild(video);
+        } else if ((msg.mime_type || '').startsWith('audio/')) {
+          const card = createAudioCard(msg, { compact: true });
+          enhanceAudioCard(card, msg);
+          card.title = '点击进入音频播放页';
+          card.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+          bubble.appendChild(card);
         }
       }
 
@@ -1218,7 +1879,7 @@
       mediaList = allMessages.filter((m) => {
         if (m.kind !== 'file') return false;
         const mt = m.mime_type || '';
-        return mt.startsWith('image/') || mt.startsWith('video/');
+        return mt.startsWith('image/') || mt.startsWith('video/') || mt.startsWith('audio/');
       });
     }
 
@@ -1246,6 +1907,8 @@
       if (index < 0 || index >= mediaList.length) return;
 
       await persistActiveVideoProgress();
+      cleanupActiveAudioVisualizer();
+      resetMediaDialogLayout();
 
       mediaIndex = index;
       const item = mediaList[mediaIndex];
@@ -1260,10 +1923,13 @@
           const img = document.createElement('img');
           img.src = item.file_url;
           img.alt = item.file_name || 'image';
+          img.addEventListener('load', () => {
+            fitMediaDialogToAspect(img.naturalWidth || img.width, img.naturalHeight || img.height);
+          }, { once: true });
           attachImageCompatibility(img, item, false);
           mediaStage.appendChild(img);
         }
-      } else {
+      } else if (mt.startsWith('video/')) {
         const cached = getMediaCompatibility(item);
         if (cached?.kind === 'video' && cached.supported === false) {
           showUnsupportedMedia(item, 'video');
@@ -1273,11 +1939,15 @@
           video.autoplay = true;
           video.playsInline = true;
           video.addEventListener('play', () => pauseOtherVideos(video));
+          video.addEventListener('loadedmetadata', () => {
+            fitMediaDialogToAspect(video.videoWidth || 0, video.videoHeight || 0);
+          }, { once: true });
           if (item.file_id) {
             const savedPosition = await fetchVideoProgress(item.file_id);
             video.addEventListener('loadedmetadata', () => {
               if ((video.videoWidth || 0) > 0 && (video.videoHeight || 0) > 0 && savedPosition > 0 && savedPosition < video.duration) {
                 video.currentTime = savedPosition;
+                playMediaElement(video);
               }
             }, { once: true });
             video.addEventListener('timeupdate', () => {
@@ -1295,6 +1965,25 @@
           attachVideoCompatibility(video, item, false);
           video.src = item.file_url;
           mediaStage.appendChild(video);
+          playMediaElement(video);
+        }
+      } else if (mt.startsWith('audio/')) {
+        const cached = getMediaCompatibility(item);
+        if (cached?.kind === 'audio' && cached.supported === false) {
+          showUnsupportedMedia(item, 'audio');
+        } else {
+          mediaDialog.classList.add('audio-mode');
+          const audio = document.createElement('audio');
+          audio.autoplay = true;
+          audio.preload = 'metadata';
+          fitMediaDialogForAudio();
+          attachAudioCompatibility(audio, item, () => showUnsupportedMedia(item, 'audio'));
+          audio.src = item.file_url;
+
+          const { shell, canvas, meta } = createAudioShell(item, audio);
+          mediaStage.appendChild(shell);
+          attachAudioVisualizer(audio, canvas, meta);
+          playMediaElement(audio);
         }
       }
 
@@ -1315,6 +2004,8 @@
 
     async function closeMediaViewer() {
       await persistActiveVideoProgress();
+      cleanupActiveAudioVisualizer();
+      resetMediaDialogLayout();
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
       mediaIndex = -1;
@@ -1432,6 +2123,7 @@
       saveSelfMessageIds();
       mediaProgressCache.clear();
       mediaCompatibilityCache.clear();
+      audioVisualCache.clear();
       pendingMessages = null;
       pendingSnapshot = '';
       lastAppliedSnapshot = '';
@@ -1461,8 +2153,22 @@
       });
       markMessageAsSelf(created.id);
       textInput.value = '';
-      await loadMessages({ source: 'send-text', followBottom: true, preserveScroll: false });
-      await animateChatScroll(chat.scrollHeight - chat.clientHeight, 320);
+      await loadMessages({ source: 'send-text', followBottom: false, preserveScroll: true });
+      await animateChatScroll(chat.scrollHeight - chat.clientHeight);
+    }
+
+    function inferMimeTypeFromName(fileName) {
+      const ext = getFileExtension(fileName);
+      const map = {
+        mp3: 'audio/mpeg',
+        wav: 'audio/wav',
+        flac: 'audio/flac',
+        aac: 'audio/aac',
+        m4a: 'audio/mp4',
+        opus: 'audio/ogg',
+        ogg: 'audio/ogg',
+      };
+      return map[ext] || null;
     }
 
     function openUploadTasksPanel() {
@@ -1665,7 +2371,7 @@
             file_key: task.fileKey,
             file_name: task.file.name,
             file_size: task.file.size,
-            mime_type: task.file.type || null,
+            mime_type: task.file.type || inferMimeTypeFromName(task.file.name),
           })
         });
 
@@ -1728,7 +2434,7 @@
                   file_key: task.fileKey,
                   file_name: task.file.name,
                   file_size: task.file.size,
-                  mime_type: task.file.type || null,
+                  mime_type: task.file.type || inferMimeTypeFromName(task.file.name),
                 })
               });
               task.uploadId = resumed.upload_id;
@@ -1839,6 +2545,7 @@
         .forEach((msg) => {
           mediaProgressCache.delete(msg.file_id);
           mediaCompatibilityCache.delete(msg.file_id);
+          audioVisualCache.delete(msg.file_id);
         });
       await api('/api/messages', {
         method: 'DELETE',
@@ -1890,6 +2597,7 @@
     };
     pickImageBtn.onclick = () => imageUploadInput.click();
     pickVideoBtn.onclick = () => videoUploadInput.click();
+    pickAudioBtn.onclick = () => audioUploadInput.click();
     imageUploadInput.onchange = () => {
       enqueueFiles(imageUploadInput.files).catch((e) => alert(e.message));
       imageUploadInput.value = '';
@@ -1898,6 +2606,11 @@
     videoUploadInput.onchange = () => {
       enqueueFiles(videoUploadInput.files).catch((e) => alert(e.message));
       videoUploadInput.value = '';
+      plusMenu.classList.add('hidden');
+    };
+    audioUploadInput.onchange = () => {
+      enqueueFiles(audioUploadInput.files).catch((e) => alert(e.message));
+      audioUploadInput.value = '';
       plusMenu.classList.add('hidden');
     };
 
