@@ -57,6 +57,11 @@ struct HealthBody {
     ok: bool,
 }
 
+#[derive(Serialize)]
+struct OkBody {
+    ok: bool,
+}
+
 #[derive(Deserialize)]
 struct AuthRequest {
     password: String,
@@ -353,6 +358,25 @@ async fn auth(
     );
 
     Ok((headers, Json(AuthResponse { token })))
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(token) = get_auth_token(&headers) {
+        if let Ok(mut sessions) = state.sessions.lock() {
+            sessions.remove(&token);
+        }
+    }
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert(
+        header::SET_COOKIE,
+        HeaderValue::from_static("fastfile_token=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/"),
+    );
+
+    Ok((resp_headers, Json(OkBody { ok: true })))
 }
 
 async fn list_messages(
@@ -995,6 +1019,7 @@ async fn run() -> Result<(), AppError> {
         .route("/", get(index_page))
         .route("/api/healthz", get(healthz))
         .route("/api/auth", post(auth))
+        .route("/api/logout", post(logout))
         .route("/api/messages", get(list_messages).delete(delete_messages))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))
