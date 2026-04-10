@@ -779,6 +779,78 @@
       });
     }
 
+    function getImageFallbackUrl(item) {
+      return item?.file_id ? `/api/image-display/${encodeURIComponent(item.file_id)}` : '';
+    }
+
+    function getVideoPosterUrl(item) {
+      return item?.file_id ? `/api/video-poster/${encodeURIComponent(item.file_id)}` : 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    }
+
+    function getPlayableVideoUrl(item, forceFallback = false) {
+      if (forceFallback && item?.file_id) {
+        return `/api/video-playable/${encodeURIComponent(item.file_id)}`;
+      }
+      return item?.file_url || '';
+    }
+
+    function attachImageFallback(img, item) {
+      if (!item?.file_id) return;
+      img.addEventListener('error', () => {
+        if (img.dataset.fallbackApplied === '1') return;
+        img.dataset.fallbackApplied = '1';
+        img.src = getImageFallbackUrl(item);
+      });
+    }
+
+    function attachVideoPlaybackFallback(video, item, initialTime = 0) {
+      if (!item?.file_id) return;
+      let fallbackApplied = false;
+
+      const applyFallback = () => {
+        if (fallbackApplied) return;
+        fallbackApplied = true;
+        const resumeTime = Math.max(initialTime, video.currentTime || 0);
+        const shouldResume = video.autoplay || !video.paused;
+        video.pause();
+        video.src = `${getPlayableVideoUrl(item, true)}?v=${Date.now()}`;
+        video.load();
+        video.addEventListener('loadedmetadata', () => {
+          if (resumeTime > 0 && resumeTime < video.duration) {
+            try {
+              video.currentTime = resumeTime;
+            } catch (_) {}
+          }
+          if (shouldResume) {
+            video.play().catch(() => {});
+          }
+        }, { once: true });
+      };
+
+      const scheduleDimensionCheck = () => {
+        setTimeout(() => {
+          if ((video.videoWidth || 0) === 0 && (video.videoHeight || 0) === 0) {
+            applyFallback();
+          }
+        }, 250);
+      };
+
+      video.addEventListener('loadedmetadata', scheduleDimensionCheck, { once: true });
+      video.addEventListener('playing', () => {
+        if ((video.videoWidth || 0) === 0 && (video.videoHeight || 0) === 0) {
+          applyFallback();
+        }
+      });
+      video.addEventListener('timeupdate', () => {
+        if ((video.currentTime || 0) > 0.5 && (video.videoWidth || 0) === 0 && (video.videoHeight || 0) === 0) {
+          applyFallback();
+        }
+      });
+      video.addEventListener('error', () => {
+        applyFallback();
+      }, { once: true });
+    }
+
     function easeInOutCubic(t) {
       return t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
     }
@@ -926,29 +998,19 @@
           img.alt = msg.file_name || 'image';
           img.style.cursor = 'pointer';
           img.title = '点击预览（支持上一条/下一条）';
+          attachImageFallback(img, msg);
           img.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
           bubble.appendChild(img);
         } else if ((msg.mime_type || '').startsWith('video/')) {
           const video = document.createElement('video');
           video.className = 'thumb';
-          video.preload = 'auto';
+          video.preload = 'metadata';
           video.muted = true;
           video.playsInline = true;
-          video.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-          video.src = `${msg.file_url}#t=0.08`;
+          video.poster = getVideoPosterUrl(msg);
+          video.src = msg.file_url;
           video.style.cursor = 'pointer';
           video.title = '点击放大播放（支持上一条/下一条）';
-          video.addEventListener('loadedmetadata', () => {
-            const previewTime = Math.min(0.08, Math.max(0.001, (video.duration || 0) / 4));
-            if (previewTime > 0) {
-              try {
-                video.currentTime = previewTime;
-              } catch (_) {}
-            }
-          }, { once: true });
-          video.addEventListener('seeked', () => {
-            video.pause();
-          });
           video.onclick = (e) => {
             e.preventDefault();
             video.pause();
@@ -1081,16 +1143,19 @@
         const img = document.createElement('img');
         img.src = item.file_url;
         img.alt = item.file_name || 'image';
+        attachImageFallback(img, item);
         mediaStage.appendChild(img);
       } else {
         const video = document.createElement('video');
-        video.src = item.file_url;
+        video.poster = getVideoPosterUrl(item);
+        video.src = getPlayableVideoUrl(item, false);
         video.controls = true;
         video.autoplay = true;
         video.playsInline = true;
         video.addEventListener('play', () => pauseOtherVideos(video));
         if (item.file_id) {
           const savedPosition = await fetchVideoProgress(item.file_id);
+          attachVideoPlaybackFallback(video, item, savedPosition);
           video.addEventListener('loadedmetadata', () => {
             if (savedPosition > 0 && savedPosition < video.duration) {
               video.currentTime = savedPosition;
