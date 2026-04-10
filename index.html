@@ -40,6 +40,10 @@
       border-radius: 12px;
       padding: 10px;
     }
+    .chat-panel {
+      position: relative;
+      overflow: hidden;
+    }
     .topbar {
       display: flex;
       justify-content: space-between;
@@ -47,10 +51,29 @@
       gap: 10px;
       flex-wrap: wrap;
     }
+    .topbar-title {
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
     .actions {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      align-items: center;
+    }
+    .topbar-actions {
+      margin-left: auto;
+    }
+    .manage-actions {
+      width: 100%;
+      justify-content: flex-end;
+    }
+    .topbar-select {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--muted);
     }
     button, input[type="password"], input[type="file"], select {
       border-radius: 8px;
@@ -86,10 +109,24 @@
       color: var(--danger);
       border-color: #f4bdbd;
     }
+    .soft-accent {
+      background: #f4f8ff;
+      border-color: #cfe0ff;
+      color: #315ea8;
+    }
+    .success {
+      background: #ebfaef;
+      border-color: #b8e3c2;
+      color: #237a3b;
+    }
+    .warning {
+      background: #fff6df;
+      border-color: #efd391;
+      color: #9a6b00;
+    }
     #chat {
       height: 56vh;
       overflow: auto;
-      scroll-behavior: smooth;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -103,6 +140,9 @@
       align-items: flex-start;
       gap: 8px;
     }
+    .item.self {
+      justify-content: flex-end;
+    }
     .bubble {
       max-width: min(92%, 820px);
       border-radius: 10px;
@@ -112,9 +152,42 @@
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .bubble-text {
+      background: #ffffff;
+      border-color: #dce6f3;
+    }
+    .bubble-self-text {
+      background: #e9f8ea;
+      border-color: #b7dfbb;
+    }
+    .bubble-file {
+      background: #fff6e8;
+      border-color: #f0d3a2;
+    }
     .item.is-media-active .bubble {
       border-color: #7ba7ff;
       box-shadow: 0 0 0 3px rgba(29, 114, 255, .14);
+    }
+    .bubble-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .bubble-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #44556f;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bubble-copy-btn {
+      padding: 4px 8px;
+      font-size: 12px;
+      min-height: auto;
+      box-shadow: none;
     }
     .meta {
       color: var(--muted);
@@ -128,6 +201,30 @@
       border-radius: 8px;
       border: 1px solid #d8e2f0;
       background: #eef4fd;
+    }
+    .scroll-fab-group {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 90;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .scroll-fab {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 700;
+      background: rgba(255, 255, 255, .92);
+      backdrop-filter: blur(10px);
+      border-color: #cfd9eb;
     }
     textarea {
       width: 100%;
@@ -315,6 +412,9 @@
       .task-grid {
         grid-template-columns: repeat(2, minmax(120px, 1fr));
       }
+      .scroll-fab-group {
+        right: 8px;
+      }
       button, input[type="file"], select {
         min-height: 38px;
       }
@@ -365,22 +465,17 @@
 
   <div class="page">
     <div class="topbar panel">
-      <strong>聊天式文件传输助手</strong>
-      <div class="actions">
+      <strong class="topbar-title">聊天式文件传输助手</strong>
+      <div class="actions topbar-actions" id="normalActions">
         <button id="uploadTasksBtn">上传任务</button>
-        <button id="restartBtn" class="danger">重启服务</button>
-        <button id="logoutBtn">退出登录</button>
-        <button id="manageBtn">管理</button>
+        <button id="manageBtn" class="success">管理</button>
         <button id="refreshBtn">刷新</button>
-        <button id="deleteBtn" class="danger hidden">删除已勾选</button>
       </div>
-    </div>
-
-    <div class="panel hidden" id="managePanel">
-      <div id="manageTools">
+      <div class="actions manage-actions hidden" id="manageActions">
+        <button id="exitManageBtn" class="warning">完成管理</button>
         <button id="selectAllBtn">全选</button>
         <button id="invertSelectBtn">反选</button>
-        <label>
+        <label class="topbar-select">
           筛选
           <select id="filterSelect">
             <option value="all">全部</option>
@@ -388,11 +483,18 @@
             <option value="text">仅文字</option>
           </select>
         </label>
+        <button id="deleteBtn" class="danger">删除已勾选</button>
+        <button id="restartBtn" class="danger">重启服务</button>
+        <button id="logoutBtn" class="danger">退出登录</button>
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel chat-panel">
       <div id="chat"></div>
+      <div class="scroll-fab-group hidden" id="scrollFabGroup">
+        <button id="scrollTopBtn" class="scroll-fab" title="回到顶部">↑</button>
+        <button id="scrollBottomBtn" class="scroll-fab" title="滑到底部">↓</button>
+      </div>
     </div>
 
     <div class="panel">
@@ -431,6 +533,8 @@
     const loginError = document.getElementById('loginError');
 
     const chat = document.getElementById('chat');
+    const normalActions = document.getElementById('normalActions');
+    const manageActions = document.getElementById('manageActions');
     const refreshBtn = document.getElementById('refreshBtn');
     const sendTextBtn = document.getElementById('sendTextBtn');
     const plusMenuBtn = document.getElementById('plusMenuBtn');
@@ -446,7 +550,7 @@
     const restartBtn = document.getElementById('restartBtn');
     const logoutBtn = document.getElementById('logoutBtn');
     const manageBtn = document.getElementById('manageBtn');
-    const managePanel = document.getElementById('managePanel');
+    const exitManageBtn = document.getElementById('exitManageBtn');
     const selectAllBtn = document.getElementById('selectAllBtn');
     const invertSelectBtn = document.getElementById('invertSelectBtn');
     const filterSelect = document.getElementById('filterSelect');
@@ -465,6 +569,9 @@
     const mediaPrevBtn = document.getElementById('mediaPrevBtn');
     const mediaNextBtn = document.getElementById('mediaNextBtn');
     const mediaCloseBtn = document.getElementById('mediaCloseBtn');
+    const scrollFabGroup = document.getElementById('scrollFabGroup');
+    const scrollTopBtn = document.getElementById('scrollTopBtn');
+    const scrollBottomBtn = document.getElementById('scrollBottomBtn');
 
     let token = '';
     let allMessages = [];
@@ -474,14 +581,26 @@
 
     let restartArmed = false;
     let restartArmTimer = null;
+    let logoutArmed = false;
+    let logoutArmTimer = null;
     let deleteArmed = false;
     let deleteArmTimer = null;
 
     const uploadTasks = new Map();
     let uploadTaskSeq = 1;
     const REMEMBER_PASSWORD_KEY = 'fastfile.remember_password';
+    const SELF_MESSAGE_IDS_KEY = 'fastfile.self_message_ids';
     let mediaList = [];
     let mediaIndex = -1;
+    let lastAppliedSnapshot = '';
+    let pendingMessages = null;
+    let pendingSnapshot = '';
+    let pollingInFlight = false;
+    let scrollAnimationFrame = 0;
+    const selfMessageIds = new Set();
+
+    const SCROLL_EDGE_THRESHOLD = 24;
+    const SMOOTH_SCROLL_DURATION = 1500;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -516,6 +635,109 @@
       return map[status] || status;
     }
 
+    function snapshotMessages(messages) {
+      return JSON.stringify((messages || []).map((m) => [
+        m.id,
+        m.kind,
+        m.text,
+        m.created_at,
+        m.file_id,
+        m.file_name,
+        m.file_size,
+        m.mime_type,
+      ]));
+    }
+
+    function getBubbleVariant(msg) {
+      if (msg.kind === 'text') {
+        return isSelfMessage(msg.id) ? 'bubble-self-text' : 'bubble-text';
+      }
+      return 'bubble-file';
+    }
+
+    function loadSelfMessageIds() {
+      selfMessageIds.clear();
+      try {
+        const raw = sessionStorage.getItem(SELF_MESSAGE_IDS_KEY);
+        const ids = JSON.parse(raw || '[]');
+        ids.forEach((id) => {
+          selfMessageIds.add(Number(id));
+        });
+      } catch (_) {}
+    }
+
+    function saveSelfMessageIds() {
+      try {
+        sessionStorage.setItem(SELF_MESSAGE_IDS_KEY, JSON.stringify(Array.from(selfMessageIds)));
+      } catch (_) {}
+    }
+
+    function markMessageAsSelf(id) {
+      if (!Number.isFinite(Number(id))) return;
+      selfMessageIds.add(Number(id));
+      saveSelfMessageIds();
+    }
+
+    function isSelfMessage(id) {
+      return selfMessageIds.has(Number(id));
+    }
+
+    function isChatNearTop() {
+      return chat.scrollTop <= SCROLL_EDGE_THRESHOLD;
+    }
+
+    function isChatNearBottom() {
+      return chat.scrollHeight - chat.clientHeight - chat.scrollTop <= SCROLL_EDGE_THRESHOLD;
+    }
+
+    function shouldDeferMessageRender() {
+      return !isChatNearBottom();
+    }
+
+    function updateRefreshButtonState() {
+      refreshBtn.textContent = pendingMessages ? '刷新（有更新）' : '刷新';
+    }
+
+    function updateScrollButtonState() {
+      const shouldShow = !loginMask.classList.contains('hidden');
+      scrollFabGroup.classList.toggle('hidden', shouldShow);
+      scrollTopBtn.disabled = isChatNearTop();
+      scrollBottomBtn.disabled = isChatNearBottom();
+    }
+
+    function easeInOutCubic(t) {
+      return t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
+    }
+
+    function animateChatScroll(target, duration = SMOOTH_SCROLL_DURATION) {
+      if (scrollAnimationFrame) cancelAnimationFrame(scrollAnimationFrame);
+      const start = chat.scrollTop;
+      const maxTarget = Math.max(0, chat.scrollHeight - chat.clientHeight);
+      const finalTarget = Math.max(0, Math.min(target, maxTarget));
+      const delta = finalTarget - start;
+      if (Math.abs(delta) < 1) {
+        chat.scrollTop = finalTarget;
+        updateScrollButtonState();
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        const startedAt = performance.now();
+        const step = (now) => {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          chat.scrollTop = start + delta * easeInOutCubic(progress);
+          updateScrollButtonState();
+          if (progress < 1) {
+            scrollAnimationFrame = requestAnimationFrame(step);
+          } else {
+            scrollAnimationFrame = 0;
+            resolve();
+          }
+        };
+        scrollAnimationFrame = requestAnimationFrame(step);
+      });
+    }
+
     function getVisibleMessages() {
       if (currentFilter === 'file') return allMessages.filter((m) => m.kind === 'file');
       if (currentFilter === 'text') return allMessages.filter((m) => m.kind === 'text');
@@ -547,6 +769,9 @@
     function renderMessage(msg) {
       const row = document.createElement('div');
       row.className = 'item';
+      if (isSelfMessage(msg.id)) {
+        row.classList.add('self');
+      }
       row.dataset.messageId = String(msg.id);
       if (msg.id === getCurrentMediaMessageId()) {
         row.classList.add('is-media-active');
@@ -564,14 +789,48 @@
       }
 
       const bubble = document.createElement('div');
-      bubble.className = 'bubble';
+      bubble.className = `bubble ${getBubbleVariant(msg)}`;
 
       if (msg.kind === 'text') {
-        bubble.textContent = msg.text || '';
+        const textValue = msg.text || '';
+        const head = document.createElement('div');
+        head.className = 'bubble-head';
+
+        const spacer = document.createElement('div');
+        spacer.className = 'bubble-title';
+        spacer.textContent = '文本';
+        spacer.style.visibility = 'hidden';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'bubble-copy-btn';
+        copyBtn.textContent = '复制';
+        copyBtn.onclick = async () => {
+          try {
+            await copyRawText(textValue);
+            copyBtn.textContent = '已复制';
+            setTimeout(() => {
+              copyBtn.textContent = '复制';
+            }, 1200);
+          } catch (err) {
+            alert(err.message || '复制失败');
+          }
+        };
+
+        head.appendChild(spacer);
+        head.appendChild(copyBtn);
+        bubble.appendChild(head);
+
+        const textBody = document.createElement('div');
+        textBody.textContent = textValue;
+        bubble.appendChild(textBody);
       } else {
+        const head = document.createElement('div');
+        head.className = 'bubble-head';
         const title = document.createElement('div');
-        title.textContent = `文件：${msg.file_name || '未命名文件'}`;
-        bubble.appendChild(title);
+        title.className = 'bubble-title';
+        title.textContent = msg.file_name || '未命名文件';
+        head.appendChild(title);
+        bubble.appendChild(head);
 
         const links = document.createElement('div');
         links.className = 'meta';
@@ -620,12 +879,67 @@
       return row;
     }
 
-    function renderMessages() {
+    function copyRawText(value) {
+      if (navigator.clipboard?.writeText) {
+        return navigator.clipboard.writeText(value);
+      }
+
+      const temp = document.createElement('textarea');
+      temp.value = value;
+      temp.style.position = 'fixed';
+      temp.style.opacity = '0';
+      document.body.appendChild(temp);
+      temp.focus();
+      temp.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(temp);
+      if (!ok) {
+        throw new Error('复制失败');
+      }
+      return Promise.resolve();
+    }
+
+    function renderMessages({ followBottom = false, preserveScroll = true } = {}) {
       const visible = getVisibleMessages();
-      chat.innerHTML = '';
-      for (const m of visible) chat.appendChild(renderMessage(m));
-      syncMediaHistoryContext();
-      chat.scrollTop = chat.scrollHeight;
+      const previousScrollTop = chat.scrollTop;
+      const existingRows = new Map(
+        Array.from(chat.querySelectorAll('.item[data-message-id]')).map((row) => [Number(row.dataset.messageId), row])
+      );
+
+      for (const msg of visible) {
+        const freshRow = renderMessage(msg);
+        const currentRow = existingRows.get(msg.id);
+        if (!currentRow) {
+          chat.appendChild(freshRow);
+          continue;
+        }
+
+        if (currentRow.outerHTML !== freshRow.outerHTML) {
+          currentRow.replaceWith(freshRow);
+        }
+      }
+
+      const visibleIds = visible.map((m) => m.id);
+      for (const [id, row] of existingRows.entries()) {
+        if (!visibleIds.includes(id)) {
+          row.remove();
+        }
+      }
+
+      const orderedRows = visible.map((m) => chat.querySelector(`.item[data-message-id="${m.id}"]`)).filter(Boolean);
+      orderedRows.forEach((row) => {
+        chat.appendChild(row);
+      });
+
+      syncMediaHistoryContext(false);
+
+      if (followBottom) {
+        chat.scrollTop = chat.scrollHeight;
+      } else if (preserveScroll) {
+        chat.scrollTop = Math.min(previousScrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+      }
+
+      updateScrollButtonState();
     }
 
     function buildMediaList() {
@@ -641,14 +955,14 @@
       return mediaList[mediaIndex]?.id ?? null;
     }
 
-    function syncMediaHistoryContext() {
+    function syncMediaHistoryContext(shouldScroll = false) {
       const currentMessageId = getCurrentMediaMessageId();
       const rows = chat.querySelectorAll('.item[data-message-id]');
       rows.forEach((row) => {
         row.classList.toggle('is-media-active', Number(row.dataset.messageId) === currentMessageId);
       });
 
-      if (currentMessageId == null) return;
+      if (!shouldScroll || currentMessageId == null) return;
       const activeRow = chat.querySelector(`.item[data-message-id="${currentMessageId}"]`);
       if (activeRow) {
         activeRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -681,7 +995,7 @@
       mediaPrevBtn.disabled = mediaIndex <= 0;
       mediaNextBtn.disabled = mediaIndex >= mediaList.length - 1;
       mediaViewer.classList.remove('hidden');
-      syncMediaHistoryContext();
+      syncMediaHistoryContext(true);
       requestAnimationFrame(() => mediaDialog.focus());
     }
 
@@ -696,7 +1010,7 @@
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
       mediaIndex = -1;
-      syncMediaHistoryContext();
+      syncMediaHistoryContext(false);
     }
 
     function switchMedia(delta) {
@@ -707,20 +1021,49 @@
     }
 
     function updateManageUi() {
-      manageBtn.textContent = manageMode ? '退出管理' : '管理';
-      managePanel.classList.toggle('hidden', !manageMode);
-      deleteBtn.classList.toggle('hidden', !manageMode);
+      normalActions.classList.toggle('hidden', manageMode);
+      manageActions.classList.toggle('hidden', !manageMode);
       if (!manageMode) {
         selectedIds.clear();
         resetDeleteButton();
+        resetRestartButton();
+        resetLogoutButton();
       }
-      renderMessages();
+      renderMessages({ preserveScroll: true });
     }
 
-    async function loadMessages() {
-      allMessages = await api('/api/messages');
+    function applyMessages(messages, { followBottom = false, preserveScroll = true } = {}) {
+      allMessages = messages;
       buildMediaList();
-      renderMessages();
+      lastAppliedSnapshot = snapshotMessages(messages);
+      pendingMessages = null;
+      pendingSnapshot = '';
+      updateRefreshButtonState();
+      renderMessages({ followBottom, preserveScroll });
+    }
+
+    function flushPendingMessages({ followBottom = false } = {}) {
+      if (!pendingMessages) return false;
+      const queued = pendingMessages;
+      applyMessages(queued, { followBottom, preserveScroll: !followBottom });
+      return true;
+    }
+
+    async function loadMessages({ source = 'poll', followBottom = false, preserveScroll = true } = {}) {
+      const incoming = await api('/api/messages');
+      const incomingSnapshot = snapshotMessages(incoming);
+      if (incomingSnapshot === pendingSnapshot || incomingSnapshot === lastAppliedSnapshot) {
+        return;
+      }
+
+      if (source === 'poll' && shouldDeferMessageRender()) {
+        pendingMessages = incoming;
+        pendingSnapshot = incomingSnapshot;
+        updateRefreshButtonState();
+        return;
+      }
+
+      applyMessages(incoming, { followBottom, preserveScroll });
     }
 
     async function login() {
@@ -740,11 +1083,32 @@
           }
         } catch (_) {}
         passwordInput.value = '';
+        loadSelfMessageIds();
         loginMask.classList.add('hidden');
-        await loadMessages();
+        await loadMessages({ source: 'login', followBottom: true, preserveScroll: false });
+        updateScrollButtonState();
       } catch (err) {
         loginError.textContent = err.message;
       }
+    }
+
+    function resetLogoutButton() {
+      logoutArmed = false;
+      logoutBtn.textContent = '退出登录';
+      if (logoutArmTimer) {
+        clearTimeout(logoutArmTimer);
+        logoutArmTimer = null;
+      }
+    }
+
+    async function handleLogoutClick() {
+      if (!logoutArmed) {
+        logoutArmed = true;
+        logoutBtn.textContent = '二次确认退出（5秒）';
+        logoutArmTimer = setTimeout(resetLogoutButton, 5000);
+        return;
+      }
+      await logout();
     }
 
     async function logout() {
@@ -754,8 +1118,17 @@
       token = '';
       selectedIds.clear();
       manageMode = false;
+      selfMessageIds.clear();
+      saveSelfMessageIds();
+      pendingMessages = null;
+      pendingSnapshot = '';
+      lastAppliedSnapshot = '';
+      resetLogoutButton();
+      resetRestartButton();
+      updateRefreshButtonState();
       updateManageUi();
       loginMask.classList.remove('hidden');
+      updateScrollButtonState();
       try {
         const cached = localStorage.getItem(REMEMBER_PASSWORD_KEY);
         passwordInput.value = cached || '';
@@ -767,13 +1140,14 @@
     async function sendText() {
       const text = textInput.value;
       if (!text) return;
-      await api('/api/messages/text', {
+      const created = await api('/api/messages/text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text })
       });
+      markMessageAsSelf(created.id);
       textInput.value = '';
-      await loadMessages();
+      await loadMessages({ source: 'send-text', followBottom: true, preserveScroll: false });
     }
 
     function openUploadTasksPanel() {
@@ -983,18 +1357,19 @@
           }
         }
 
-        await api('/api/uploads/complete', {
+        const completed = await api('/api/uploads/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ upload_id: task.uploadId })
         });
+        markMessageAsSelf(completed.id);
 
         task.status = 'done';
         task.completedAt = Date.now();
         task.error = '';
         updateTaskSpeed(task);
         renderUploadTasks();
-        await loadMessages();
+        await loadMessages({ source: 'upload-complete', followBottom: isChatNearBottom(), preserveScroll: !isChatNearBottom() });
       } catch (err) {
         if (task.status !== 'cancelled') {
           task.status = 'error';
@@ -1067,7 +1442,7 @@
       });
       selectedIds.clear();
       resetDeleteButton();
-      await loadMessages();
+      await loadMessages({ source: 'delete', followBottom: false, preserveScroll: true });
     }
 
     async function handleDeleteClick() {
@@ -1094,8 +1469,14 @@
     }
 
     loginBtn.onclick = login;
-    logoutBtn.onclick = () => logout().catch((e) => alert(e.message));
-    refreshBtn.onclick = () => loadMessages().catch((e) => alert(e.message));
+    logoutBtn.onclick = () => handleLogoutClick().catch((e) => {
+      resetLogoutButton();
+      alert(e.message);
+    });
+    refreshBtn.onclick = () => {
+      if (flushPendingMessages({ followBottom: isChatNearBottom() })) return;
+      loadMessages({ source: 'manual-refresh', followBottom: isChatNearBottom(), preserveScroll: !isChatNearBottom() }).catch((e) => alert(e.message));
+    };
     sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
     sendFileBtn.onclick = () => sendFiles().catch((e) => alert(e.message));
 
@@ -1124,13 +1505,17 @@
       manageMode = !manageMode;
       updateManageUi();
     };
+    exitManageBtn.onclick = () => {
+      manageMode = false;
+      updateManageUi();
+    };
 
     deleteBtn.onclick = () => handleDeleteClick().catch((e) => alert(e.message));
     selectAllBtn.onclick = selectAllVisible;
     invertSelectBtn.onclick = invertVisible;
     filterSelect.onchange = () => {
       currentFilter = filterSelect.value;
-      renderMessages();
+      renderMessages({ preserveScroll: true });
     };
 
     uploadTasksBtn.onclick = openUploadTasksPanel;
@@ -1163,6 +1548,13 @@
       if (images.length) {
         e.preventDefault();
         enqueueFiles(images).catch((err) => alert(err.message));
+      }
+    });
+
+    chat.addEventListener('scroll', () => {
+      updateScrollButtonState();
+      if (pendingMessages && isChatNearBottom()) {
+        flushPendingMessages({ followBottom: true });
       }
     });
 
@@ -1222,10 +1614,25 @@
       }
     });
 
+    scrollTopBtn.onclick = () => {
+      animateChatScroll(0).catch(() => {});
+    };
+    scrollBottomBtn.onclick = () => {
+      animateChatScroll(chat.scrollHeight - chat.clientHeight).catch(() => {});
+    };
+
     setInterval(() => {
-      if (token) loadMessages().catch(() => {});
+      if (token && !pollingInFlight) {
+        pollingInFlight = true;
+        loadMessages({ source: 'poll', followBottom: false, preserveScroll: true }).catch(() => {}).finally(() => {
+          pollingInFlight = false;
+        });
+      }
       if (uploadTasks.size) renderUploadTasks();
     }, 1200);
+
+    updateRefreshButtonState();
+    updateScrollButtonState();
   </script>
 </body>
 </html>
