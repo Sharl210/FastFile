@@ -23,7 +23,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::process::Command;
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use urlencoding::encode;
@@ -33,7 +32,6 @@ struct AppState {
     db_path: PathBuf,
     files_dir: PathBuf,
     temp_dir: PathBuf,
-    derived_dir: PathBuf,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     startup_config: StartupConfig,
     sessions: Arc<Mutex<HashMap<String, i64>>>,
@@ -283,7 +281,6 @@ fn init_storage(
     storage_root: &Path,
     files_dir: &Path,
     temp_dir: &Path,
-    derived_dir: &Path,
     db_path: &Path,
 ) -> Result<(), AppError> {
     std::fs::create_dir_all(storage_root)
@@ -292,8 +289,6 @@ fn init_storage(
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建文件目录失败: {e}")))?;
     std::fs::create_dir_all(temp_dir)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时目录失败: {e}")))?;
-    std::fs::create_dir_all(derived_dir)
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建衍生文件目录失败: {e}")))?;
 
     let conn = open_conn(db_path)?;
     conn.execute_batch(
@@ -446,276 +441,6 @@ fn parse_range_header(range_header: &str, total_size: u64) -> Result<Option<(u64
     }
 
     Ok(Some((start, end.min(last_index))))
-}
-
-fn derivative_variant_path(derived_dir: &Path, kind: &str, file_id: &str, extension: &str) -> PathBuf {
-    derived_dir.join(kind).join(format!("{file_id}.{extension}"))
-}
-
-fn temp_variant_path(target_path: &Path) -> PathBuf {
-    let stem = target_path
-        .file_stem()
-        .and_then(|v| v.to_str())
-        .unwrap_or("variant");
-    let ext = target_path
-        .extension()
-        .and_then(|v| v.to_str())
-        .unwrap_or("bin");
-    target_path.with_file_name(format!("{stem}.{}.tmp.{ext}", create_token()))
-}
-
-async fn move_generated_file(temp_path: &Path, target_path: &Path) -> Result<(), AppError> {
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建衍生目录失败: {e}")))?;
-    }
-
-    if fs::metadata(target_path).await.is_ok() {
-        let _ = fs::remove_file(temp_path).await;
-        return Ok(());
-    }
-
-    match fs::rename(temp_path, target_path).await {
-        Ok(_) => Ok(()),
-        Err(rename_err) => {
-            fs::copy(temp_path, target_path).await.map_err(|e| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("保存衍生文件失败: {rename_err}; copy fallback failed: {e}"),
-                )
-            })?;
-            let _ = fs::remove_file(temp_path).await;
-            Ok(())
-        }
-    }
-}
-
-async fn run_ffmpeg(args: Vec<String>, action_name: &str) -> Result<(), AppError> {
-    let output = Command::new("ffmpeg")
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("启动 ffmpeg 失败: {e}")))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let reason = stderr.trim();
-    Err(AppError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        if reason.is_empty() {
-            format!("{action_name}失败")
-        } else {
-            format!("{action_name}失败: {reason}")
-        },
-    ))
-}
-
-async fn lookup_file_record(
-    state: &AppState,
-    file_id: &str,
-) -> Result<(String, String, PathBuf), AppError> {
-    let (file_name, mime_type): (String, String) = {
-        let conn = open_conn(&state.db_path)?;
-        let mut stmt = conn
-            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1")
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
-        stmt.query_row(params![file_id], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?
-                    .unwrap_or_else(|| "file".to_string()),
-                row.get::<_, Option<String>>(1)?
-                    .unwrap_or_else(|| "application/octet-stream".to_string()),
-            ))
-        })
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?
-    };
-
-    let file_path = state.files_dir.join(file_id);
-    if fs::metadata(&file_path).await.is_err() {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "文件不存在"));
-    }
-
-    Ok((file_name, mime_type, file_path))
-}
-
-async fn serve_file_path(
-    file_path: &Path,
-    mime_type: &str,
-    file_name: Option<&str>,
-    request_headers: &HeaderMap,
-    as_download: bool,
-) -> Result<Response, AppError> {
-    let mut file = fs::File::open(file_path)
-        .await
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?;
-    let metadata = file
-        .metadata()
-        .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取文件信息失败: {e}")))?;
-    let total_size = metadata.len();
-
-    let range = request_headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| parse_range_header(v, total_size))
-        .transpose()?
-        .flatten();
-
-    let (start, end, status) = match range {
-        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
-        None => (0, total_size.saturating_sub(1), StatusCode::OK),
-    };
-
-    let length = if total_size == 0 { 0 } else { end - start + 1 };
-    if length > 0 {
-        file.seek(std::io::SeekFrom::Start(start))
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("定位文件失败: {e}")))?;
-    }
-
-    let stream = ReaderStream::new(file.take(length));
-    let body = Body::from_stream(stream);
-    let mut resp = Response::new(body);
-    *resp.status_mut() = status;
-    let headers = resp.headers_mut();
-
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(mime_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
-    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&length.to_string())
-            .unwrap_or_else(|_| HeaderValue::from_static("0")),
-    );
-    if status == StatusCode::PARTIAL_CONTENT {
-        let content_range = format!("bytes {start}-{end}/{total_size}");
-        headers.insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&content_range)
-                .unwrap_or_else(|_| HeaderValue::from_static("bytes */0")),
-        );
-    }
-
-    if as_download {
-        let display_name = file_name.unwrap_or("file");
-        let dispo = format!("attachment; filename=\"{}\"", display_name.replace('"', ""));
-        headers.insert(
-            header::CONTENT_DISPOSITION,
-            HeaderValue::from_str(&dispo)
-                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-        );
-    }
-
-    Ok(resp)
-}
-
-async fn ensure_video_poster(
-    state: &AppState,
-    file_id: &str,
-    source_path: &Path,
-) -> Result<PathBuf, AppError> {
-    let target_path = derivative_variant_path(&state.derived_dir, "posters", file_id, "jpg");
-    if fs::metadata(&target_path).await.is_ok() {
-        return Ok(target_path);
-    }
-
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建缩略图目录失败: {e}")))?;
-    }
-
-    let temp_path = temp_variant_path(&target_path);
-    run_ffmpeg(
-        vec![
-            "-hide_banner".to_string(),
-            "-loglevel".to_string(),
-            "error".to_string(),
-            "-y".to_string(),
-            "-ss".to_string(),
-            "0.08".to_string(),
-            "-i".to_string(),
-            source_path.to_string_lossy().to_string(),
-            "-frames:v".to_string(),
-            "1".to_string(),
-            "-q:v".to_string(),
-            "2".to_string(),
-            temp_path.to_string_lossy().to_string(),
-        ],
-        "生成视频缩略图",
-    )
-    .await?;
-    move_generated_file(&temp_path, &target_path).await?;
-    Ok(target_path)
-}
-
-async fn ensure_playable_video_variant(
-    state: &AppState,
-    file_id: &str,
-    source_path: &Path,
-) -> Result<PathBuf, AppError> {
-    let target_path = derivative_variant_path(&state.derived_dir, "transcodes", file_id, "mp4");
-    if fs::metadata(&target_path).await.is_ok() {
-        return Ok(target_path);
-    }
-
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建转码目录失败: {e}")))?;
-    }
-
-    let temp_path = temp_variant_path(&target_path);
-    run_ffmpeg(
-        vec![
-            "-hide_banner".to_string(),
-            "-loglevel".to_string(),
-            "error".to_string(),
-            "-y".to_string(),
-            "-i".to_string(),
-            source_path.to_string_lossy().to_string(),
-            "-map".to_string(),
-            "0:v:0".to_string(),
-            "-map".to_string(),
-            "0:a?".to_string(),
-            "-c:v".to_string(),
-            "libx264".to_string(),
-            "-preset".to_string(),
-            "veryfast".to_string(),
-            "-pix_fmt".to_string(),
-            "yuv420p".to_string(),
-            "-movflags".to_string(),
-            "+faststart".to_string(),
-            "-c:a".to_string(),
-            "aac".to_string(),
-            "-b:a".to_string(),
-            "128k".to_string(),
-            temp_path.to_string_lossy().to_string(),
-        ],
-        "生成兼容播放视频",
-    )
-    .await?;
-    move_generated_file(&temp_path, &target_path).await?;
-    Ok(target_path)
-}
-
-async fn cleanup_video_variants(derived_dir: &Path, file_id: &str) {
-    let variants = [
-        ("posters", "jpg"),
-        ("transcodes", "mp4"),
-        ("images", "png"),
-    ];
-    for (kind, ext) in variants {
-        let path = derivative_variant_path(derived_dir, kind, file_id, ext);
-        let _ = fs::remove_file(path).await;
-    }
 }
 
 fn get_ui_state_value(conn: &Connection, key: &str) -> Result<Option<i64>, AppError> {
@@ -937,73 +662,6 @@ async fn update_video_progress(
     Ok(Json(VideoProgressResponse {
         position_seconds: payload.position_seconds,
     }))
-}
-
-async fn image_display(
-    State(state): State<AppState>,
-    AxumPath(file_id): AxumPath<String>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let (_, mime_type, source_path) = lookup_file_record(&state, &file_id).await?;
-    if !mime_type.starts_with("image/") {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "不是图片文件"));
-    }
-
-    let target_path = derivative_variant_path(&state.derived_dir, "images", &file_id, "png");
-    if fs::metadata(&target_path).await.is_err() {
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建图片回退目录失败: {e}")))?;
-        }
-        let temp_path = temp_variant_path(&target_path);
-        run_ffmpeg(
-            vec![
-                "-hide_banner".to_string(),
-                "-loglevel".to_string(),
-                "error".to_string(),
-                "-y".to_string(),
-                "-i".to_string(),
-                source_path.to_string_lossy().to_string(),
-                "-frames:v".to_string(),
-                "1".to_string(),
-                temp_path.to_string_lossy().to_string(),
-            ],
-            "生成兼容图片",
-        )
-        .await?;
-        move_generated_file(&temp_path, &target_path).await?;
-    }
-
-    serve_file_path(&target_path, "image/png", None, &headers, false).await
-}
-
-async fn video_poster(
-    State(state): State<AppState>,
-    AxumPath(file_id): AxumPath<String>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let (_, mime_type, source_path) = lookup_file_record(&state, &file_id).await?;
-    if !mime_type.starts_with("video/") {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "不是视频文件"));
-    }
-
-    let poster_path = ensure_video_poster(&state, &file_id, &source_path).await?;
-    serve_file_path(&poster_path, "image/jpeg", None, &headers, false).await
-}
-
-async fn video_playable(
-    State(state): State<AppState>,
-    AxumPath(file_id): AxumPath<String>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let (_, mime_type, source_path) = lookup_file_record(&state, &file_id).await?;
-    if !mime_type.starts_with("video/") {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "不是视频文件"));
-    }
-
-    let playable_path = ensure_playable_video_variant(&state, &file_id, &source_path).await?;
-    serve_file_path(&playable_path, "video/mp4", None, &headers, false).await
 }
 
 async fn create_text_message(
@@ -1533,7 +1191,6 @@ async fn delete_messages(
                 .await
                 .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除文件失败: {e}")))?;
         }
-        cleanup_video_variants(&state.derived_dir, fid).await;
     }
 
     if !file_ids.is_empty() {
@@ -1559,15 +1216,89 @@ async fn direct_file(
     let file_id = path.file_id;
     let _display_name = path.display_name;
 
-    let (file_name, mime_type, source_path) = lookup_file_record(&state, &file_id).await?;
-    serve_file_path(
-        &source_path,
-        &mime_type,
-        Some(&file_name),
-        &headers,
-        query.get("download").map(String::as_str) == Some("1"),
-    )
-    .await
+    let (file_name, mime_type): (String, String) = {
+        let conn = open_conn(&state.db_path)?;
+        let mut stmt = conn
+            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1")
+            .map_err(|e| {
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}"))
+            })?;
+        stmt.query_row(params![file_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?
+                    .unwrap_or_else(|| "file".to_string()),
+                row.get::<_, Option<String>>(1)?
+                    .unwrap_or_else(|| "application/octet-stream".to_string()),
+            ))
+        })
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?
+    };
+
+    let path = state.files_dir.join(&file_id);
+    let mut file = fs::File::open(&path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?;
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取文件信息失败: {e}")))?;
+    let total_size = metadata.len();
+
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| parse_range_header(v, total_size))
+        .transpose()?
+        .flatten();
+
+    let (start, end, status) = match range {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, total_size.saturating_sub(1), StatusCode::OK),
+    };
+
+    let length = if total_size == 0 { 0 } else { end - start + 1 };
+    if length > 0 {
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("定位文件失败: {e}")))?;
+    }
+
+    let stream = ReaderStream::new(file.take(length));
+    let body = Body::from_stream(stream);
+    let mut resp = Response::new(body);
+    *resp.status_mut() = status;
+    let headers = resp.headers_mut();
+
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&mime_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&length.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("0")),
+    );
+    if status == StatusCode::PARTIAL_CONTENT {
+        let content_range = format!("bytes {start}-{end}/{total_size}");
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&content_range)
+                .unwrap_or_else(|_| HeaderValue::from_static("bytes */0")),
+        );
+    }
+
+    if query.get("download").map(String::as_str) == Some("1") {
+        let dispo = format!("attachment; filename=\"{}\"", file_name.replace('"', ""));
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&dispo)
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        );
+    }
+
+    Ok(resp)
 }
 
 async fn restart_service(
@@ -1638,19 +1369,17 @@ async fn run() -> Result<(), AppError> {
         .unwrap_or(true);
     let files_dir = storage_root.join("files");
     let temp_dir = storage_root.join("tmp");
-    let derived_dir = storage_root.join("derived");
     let db_path = storage_root.join("messages.db");
 
     let initial_runtime_config = load_runtime_config(&config_path);
     let runtime_config = Arc::new(RwLock::new(initial_runtime_config));
 
-    init_storage(&storage_root, &files_dir, &temp_dir, &derived_dir, &db_path)?;
+    init_storage(&storage_root, &files_dir, &temp_dir, &db_path)?;
 
     let state = AppState {
         db_path,
         files_dir,
         temp_dir,
-        derived_dir,
         runtime_config: runtime_config.clone(),
         startup_config: StartupConfig { allow_web_restart },
         sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -1673,9 +1402,6 @@ async fn run() -> Result<(), AppError> {
         .route("/api/ui-state", get(get_ui_state).put(update_ui_state))
         .route("/api/ui-state/reset", post(reset_ui_state))
         .route("/api/video-progress/:file_id", get(get_video_progress).put(update_video_progress))
-        .route("/api/image-display/:file_id", get(image_display))
-        .route("/api/video-poster/:file_id", get(video_poster))
-        .route("/api/video-playable/:file_id", get(video_playable))
         .route("/api/messages", get(list_messages).delete(delete_messages))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))
@@ -1736,26 +1462,4 @@ fn load_config_map(config_path: &Path) -> HashMap<String, String> {
         }
     }
     file_map
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn derivative_variant_paths_are_stable() {
-        let root = Path::new("/tmp/fastfile-derived");
-        assert_eq!(
-            derivative_variant_path(root, "posters", "abc123", "jpg"),
-            PathBuf::from("/tmp/fastfile-derived/posters/abc123.jpg")
-        );
-        assert_eq!(
-            derivative_variant_path(root, "transcodes", "abc123", "mp4"),
-            PathBuf::from("/tmp/fastfile-derived/transcodes/abc123.mp4")
-        );
-        assert_eq!(
-            derivative_variant_path(root, "images", "abc123", "png"),
-            PathBuf::from("/tmp/fastfile-derived/images/abc123.png")
-        );
-    }
 }
