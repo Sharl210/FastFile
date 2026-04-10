@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>云端传输助手</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0f1115;
+      color: #e7eaf0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+    .page {
+      max-width: 960px;
+      margin: 0 auto;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      gap: 12px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .topbar .actions { display: flex; gap: 8px; }
+    .panel {
+      border: 1px solid #2b3140;
+      border-radius: 12px;
+      background: #171b23;
+      padding: 10px;
+    }
+    #chat {
+      height: 58vh;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px;
+      background: #0c0f14;
+      border-radius: 8px;
+    }
+    .item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .bubble {
+      max-width: min(90%, 760px);
+      background: #1f2633;
+      border: 1px solid #313a4d;
+      border-radius: 10px;
+      padding: 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .meta { color: #98a3b8; font-size: 12px; margin-top: 6px; }
+    .thumb {
+      margin-top: 8px;
+      width: 240px;
+      max-width: 100%;
+      border-radius: 8px;
+      border: 1px solid #30394d;
+      background: #0d1118;
+    }
+    textarea {
+      width: 100%;
+      min-height: 96px;
+      resize: vertical;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #2b3140;
+      color: #e7eaf0;
+      background: #10141c;
+      outline: none;
+    }
+    button, input[type="password"], input[type="file"] {
+      border-radius: 8px;
+      border: 1px solid #344059;
+      background: #141b27;
+      color: #dce3f3;
+      padding: 8px 10px;
+    }
+    button { cursor: pointer; }
+    .login-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 99;
+    }
+    .login-box {
+      width: min(92vw, 360px);
+      background: #131824;
+      border: 1px solid #2e3650;
+      border-radius: 14px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .hidden { display: none !important; }
+    .danger {
+      border-color: #7c2d38;
+      background: #2c1318;
+      color: #ffc9d0;
+    }
+    a { color: #8cc8ff; }
+    .footer-note { color: #95a1b9; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="login-mask" id="loginMask">
+    <div class="login-box">
+      <strong>进入云端传输助手</strong>
+      <input id="passwordInput" type="password" placeholder="请输入密码" autocomplete="off" />
+      <button id="loginBtn">登录</button>
+      <div id="loginError" class="footer-note"></div>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="topbar panel">
+      <strong>聊天式文件传输助手</strong>
+      <div class="actions">
+        <button id="manageBtn">管理</button>
+        <button id="refreshBtn">刷新</button>
+        <button id="deleteBtn" class="danger hidden">删除已勾选</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div id="chat"></div>
+    </div>
+
+    <div class="panel">
+      <textarea id="textInput" placeholder="输入要发送的文本（不限制长度）"></textarea>
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <button id="sendTextBtn">发送文本</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <input id="fileInput" type="file" />
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <button id="sendFileBtn">上传文件</button>
+      </div>
+      <div class="footer-note" style="margin-top:8px;">
+        文件和文本只存云端，前端不做本地持久化。
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const loginMask = document.getElementById('loginMask');
+    const loginBtn = document.getElementById('loginBtn');
+    const passwordInput = document.getElementById('passwordInput');
+    const loginError = document.getElementById('loginError');
+    const chat = document.getElementById('chat');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const sendTextBtn = document.getElementById('sendTextBtn');
+    const sendFileBtn = document.getElementById('sendFileBtn');
+    const textInput = document.getElementById('textInput');
+    const fileInput = document.getElementById('fileInput');
+    const manageBtn = document.getElementById('manageBtn');
+    const deleteBtn = document.getElementById('deleteBtn');
+
+    let token = '';
+    let manageMode = false;
+    const selectedIds = new Set();
+
+    async function api(path, options = {}) {
+      const cfg = { ...options };
+      cfg.headers = { ...(options.headers || {}) };
+      if (token) cfg.headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(path, cfg);
+      if (res.status === 401) {
+        token = '';
+        loginMask.classList.remove('hidden');
+        throw new Error('未授权');
+      }
+      if (!res.ok) {
+        let msg = `请求失败: ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j.error) msg = j.error;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      return res.json();
+    }
+
+    function formatSize(size) {
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+
+    function renderMessage(msg) {
+      const row = document.createElement('div');
+      row.className = 'item';
+
+      if (manageMode) {
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = selectedIds.has(msg.id);
+        check.onchange = () => {
+          if (check.checked) selectedIds.add(msg.id);
+          else selectedIds.delete(msg.id);
+        };
+        row.appendChild(check);
+      }
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+
+      if (msg.kind === 'text') {
+        bubble.textContent = msg.text || '';
+      } else {
+        const title = document.createElement('div');
+        title.textContent = `文件：${msg.file_name || '未命名文件'}`;
+        bubble.appendChild(title);
+
+        const links = document.createElement('div');
+        links.className = 'meta';
+        const direct = document.createElement('a');
+        direct.href = msg.download_url;
+        direct.target = '_blank';
+        direct.rel = 'noopener noreferrer';
+        direct.textContent = '直链下载';
+        links.appendChild(direct);
+        const size = document.createElement('span');
+        size.textContent = `  ·  ${formatSize(msg.file_size || 0)}`;
+        links.appendChild(size);
+        bubble.appendChild(links);
+
+        if ((msg.mime_type || '').startsWith('image/')) {
+          const img = document.createElement('img');
+          img.className = 'thumb';
+          img.src = msg.file_url;
+          img.alt = msg.file_name || 'image';
+          bubble.appendChild(img);
+        } else if ((msg.mime_type || '').startsWith('video/')) {
+          const video = document.createElement('video');
+          video.className = 'thumb';
+          video.controls = true;
+          video.preload = 'metadata';
+          video.src = msg.file_url;
+          bubble.appendChild(video);
+        }
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = new Date(msg.created_at).toLocaleString();
+      bubble.appendChild(meta);
+
+      row.appendChild(bubble);
+      return row;
+    }
+
+    async function loadMessages() {
+      const data = await api('/api/messages');
+      chat.innerHTML = '';
+      for (const m of data) {
+        chat.appendChild(renderMessage(m));
+      }
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function login() {
+      loginError.textContent = '';
+      const pass = passwordInput.value;
+      try {
+        const data = await api('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pass })
+        });
+        token = data.token;
+        passwordInput.value = '';
+        loginMask.classList.add('hidden');
+        await loadMessages();
+      } catch (err) {
+        loginError.textContent = err.message;
+      }
+    }
+
+    async function sendText() {
+      const text = textInput.value;
+      if (!text) return;
+      await api('/api/messages/text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      textInput.value = '';
+      await loadMessages();
+    }
+
+    async function sendFile() {
+      if (!fileInput.files.length) return;
+      const form = new FormData();
+      form.append('file', fileInput.files[0]);
+      await api('/api/messages/file', {
+        method: 'POST',
+        body: form
+      });
+      fileInput.value = '';
+      await loadMessages();
+    }
+
+    async function deleteSelected() {
+      if (!selectedIds.size) return;
+      await api('/api/messages', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selectedIds) })
+      });
+      selectedIds.clear();
+      await loadMessages();
+    }
+
+    loginBtn.onclick = login;
+    refreshBtn.onclick = () => loadMessages().catch((e) => alert(e.message));
+    sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
+    sendFileBtn.onclick = () => sendFile().catch((e) => alert(e.message));
+    deleteBtn.onclick = () => deleteSelected().catch((e) => alert(e.message));
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') login();
+    });
+
+    manageBtn.onclick = () => {
+      manageMode = !manageMode;
+      if (!manageMode) selectedIds.clear();
+      deleteBtn.classList.toggle('hidden', !manageMode);
+      loadMessages().catch((e) => alert(e.message));
+    };
+
+    setInterval(() => {
+      if (token) loadMessages().catch(() => {});
+    }, 5000);
+  </script>
+</body>
+</html>

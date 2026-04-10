@@ -1,0 +1,623 @@
+use std::{
+    collections::HashMap,
+    env,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use axum::{
+    body::Body,
+    extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, State},
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use chrono::Utc;
+use rand::{distributions::Alphanumeric, Rng};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use tokio::{fs, io::AsyncWriteExt};
+use tokio::sync::RwLock;
+use tokio_util::io::ReaderStream;
+use urlencoding::encode;
+
+#[derive(Clone)]
+struct AppState {
+    db_path: PathBuf,
+    files_dir: PathBuf,
+    runtime_config: Arc<RwLock<RuntimeConfig>>,
+    sessions: Arc<Mutex<HashMap<String, i64>>>,
+}
+
+#[derive(Clone)]
+struct RuntimeConfig {
+    password: String,
+    session_ttl_seconds: i64,
+}
+
+#[derive(Serialize)]
+struct ErrorBody {
+    error: String,
+}
+
+#[derive(Serialize)]
+struct HealthBody {
+    ok: bool,
+}
+
+#[derive(Deserialize)]
+struct AuthRequest {
+    password: String,
+}
+
+#[derive(Serialize)]
+struct AuthResponse {
+    token: String,
+}
+
+#[derive(Deserialize)]
+struct TextRequest {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct DeleteRequest {
+    ids: Vec<i64>,
+}
+
+#[derive(Serialize)]
+struct DeleteResponse {
+    deleted: usize,
+}
+
+#[derive(Serialize)]
+struct MessageDto {
+    id: i64,
+    kind: String,
+    text: Option<String>,
+    created_at: String,
+    file_id: Option<String>,
+    file_name: Option<String>,
+    file_size: Option<i64>,
+    mime_type: Option<String>,
+    file_url: Option<String>,
+    download_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FileRoutePath {
+    file_id: String,
+    display_name: String,
+}
+
+#[derive(Debug)]
+struct AppError {
+    status: StatusCode,
+    message: String,
+}
+
+impl AppError {
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (self.status, Json(ErrorBody { error: self.message })).into_response()
+    }
+}
+
+fn now_iso() -> String {
+    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+fn create_token() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
+}
+
+fn get_cookie_token(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    for pair in raw.split(';') {
+        let pair = pair.trim();
+        if let Some(v) = pair.strip_prefix("fastfile_token=") {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+fn get_auth_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    get_cookie_token(headers)
+}
+
+async fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<(), AppError> {
+    let token = get_auth_token(headers).ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "未授权"))?;
+    let ttl = {
+        let cfg = state.runtime_config.read().await;
+        cfg.session_ttl_seconds
+    };
+    let now = Utc::now().timestamp();
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "会话锁异常"))?;
+
+    match sessions.get(&token).copied() {
+        Some(expire_at) if expire_at > now => {
+            sessions.insert(token, now + ttl);
+            Ok(())
+        }
+        _ => {
+            sessions.remove(&token);
+            Err(AppError::new(StatusCode::UNAUTHORIZED, "未授权"))
+        }
+    }
+}
+
+fn open_conn(db_path: &Path) -> Result<Connection, AppError> {
+    Connection::open(db_path)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库打开失败: {e}")))
+}
+
+fn init_storage(storage_root: &Path, files_dir: &Path, db_path: &Path) -> Result<(), AppError> {
+    std::fs::create_dir_all(storage_root)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建存储目录失败: {e}")))?;
+    std::fs::create_dir_all(files_dir)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建文件目录失败: {e}")))?;
+
+    let conn = open_conn(db_path)?;
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            text_content TEXT,
+            file_id TEXT UNIQUE,
+            file_name TEXT,
+            file_size INTEGER,
+            mime_type TEXT,
+            created_at TEXT NOT NULL
+        );
+        ",
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("建表失败: {e}")))?;
+    Ok(())
+}
+
+fn row_to_dto(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageDto> {
+    let kind: String = row.get("kind")?;
+    let file_id: Option<String> = row.get("file_id")?;
+    let file_name: Option<String> = row.get("file_name")?;
+    let file_url = file_id.as_ref().map(|fid| {
+        let display = encode(file_name.as_deref().unwrap_or("file"));
+        format!("/f/{fid}/{display}")
+    });
+    let download_url = file_url.as_ref().map(|v| format!("{v}?download=1"));
+
+    Ok(MessageDto {
+        id: row.get("id")?,
+        kind,
+        text: row.get("text_content")?,
+        created_at: row.get("created_at")?,
+        file_id,
+        file_name,
+        file_size: row.get("file_size")?,
+        mime_type: row.get("mime_type")?,
+        file_url,
+        download_url,
+    })
+}
+
+async fn no_cache_middleware(req: Request<Body>, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(header::EXPIRES, HeaderValue::from_static("0"));
+    resp
+}
+
+async fn index_page() -> Html<&'static str> {
+    Html(include_str!("../index.html"))
+}
+
+async fn healthz() -> Json<HealthBody> {
+    Json(HealthBody { ok: true })
+}
+
+async fn auth(
+    State(state): State<AppState>,
+    Json(payload): Json<AuthRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let cfg = state.runtime_config.read().await.clone();
+    if payload.password != cfg.password {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "密码错误"));
+    }
+
+    let token = create_token();
+    let now = Utc::now().timestamp();
+    {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "会话锁异常"))?;
+        sessions.insert(token.clone(), now + cfg.session_ttl_seconds);
+    }
+
+    let cookie = format!(
+        "fastfile_token={}; Max-Age={}; HttpOnly; SameSite=Strict; Path=/",
+        token, cfg.session_ttl_seconds
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&cookie)
+            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Cookie 设置失败"))?,
+    );
+
+    Ok((headers, Json(AuthResponse { token })))
+}
+
+async fn list_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<MessageDto>>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM messages ORDER BY id ASC")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+    let rows = stmt
+        .query_map([], row_to_dto)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取行失败: {e}")))?,
+        );
+    }
+    Ok(Json(out))
+}
+
+async fn create_text_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<TextRequest>,
+) -> Result<Json<MessageDto>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    conn.execute(
+        "INSERT INTO messages (kind, text_content, created_at) VALUES (?1, ?2, ?3)",
+        params!["text", payload.text, now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
+
+    let id = conn.last_insert_rowid();
+    let mut stmt = conn
+        .prepare("SELECT * FROM messages WHERE id = ?1")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+    let dto = stmt
+        .query_row(params![id], row_to_dto)
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+
+    Ok(Json(dto))
+}
+
+async fn create_file_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<MessageDto>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let mut found = false;
+    let mut file_id = String::new();
+    let mut file_name = String::new();
+    let mut mime_type = String::from("application/octet-stream");
+    let mut file_size: i64 = 0;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, format!("读取上传失败: {e}")))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        found = true;
+        file_id = create_token();
+        file_name = field.file_name().unwrap_or("file").to_string();
+        if let Some(ct) = field.content_type() {
+            mime_type = ct.to_string();
+        }
+
+        let path = state.files_dir.join(&file_id);
+        let mut out = fs::File::create(&path)
+            .await
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建文件失败: {e}")))?;
+
+        let mut stream_field = field;
+        while let Some(chunk) = stream_field
+            .chunk()
+            .await
+            .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, format!("读取分片失败: {e}")))?
+        {
+            file_size += i64::try_from(chunk.len())
+                .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "文件过大"))?;
+            out.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入文件失败: {e}")))?;
+        }
+        break;
+    }
+
+    if !found {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "缺少文件"));
+    }
+
+    let conn = open_conn(&state.db_path)?;
+    conn.execute(
+        "INSERT INTO messages (kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params!["file", file_id, file_name, file_size, mime_type, now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
+
+    let id = conn.last_insert_rowid();
+    let mut stmt = conn
+        .prepare("SELECT * FROM messages WHERE id = ?1")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+    let dto = stmt
+        .query_row(params![id], row_to_dto)
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+
+    Ok(Json(dto))
+}
+
+async fn delete_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<DeleteRequest>,
+) -> Result<Json<DeleteResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let mut ids: Vec<i64> = payload.ids.into_iter().filter(|v| *v > 0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+
+    if ids.is_empty() {
+        return Ok(Json(DeleteResponse { deleted: 0 }));
+    }
+
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let sql_find = format!("SELECT file_id FROM messages WHERE id IN ({placeholders})");
+    let sql_del = format!("DELETE FROM messages WHERE id IN ({placeholders})");
+
+    let conn = open_conn(&state.db_path)?;
+
+    let file_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare(&sql_find)
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(ids.iter().copied()))
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?
+        {
+            let fid: Option<String> = row
+                .get(0)
+                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+            if let Some(v) = fid {
+                out.push(v);
+            }
+        }
+        out
+    };
+
+    for fid in &file_ids {
+        let path = state.files_dir.join(fid);
+        if path.exists() {
+            fs::remove_file(&path)
+                .await
+                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除文件失败: {e}")))?;
+        }
+    }
+
+    let deleted = conn
+        .execute(&sql_del, rusqlite::params_from_iter(ids.iter().copied()))
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
+
+    Ok(Json(DeleteResponse { deleted }))
+}
+
+async fn direct_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(path): AxumPath<FileRoutePath>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    require_auth(&headers, &state).await?;
+    let file_id = path.file_id;
+    let _display_name = path.display_name;
+
+    let (file_name, mime_type): (String, String) = {
+        let conn = open_conn(&state.db_path)?;
+        let mut stmt = conn
+            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1")
+            .map_err(|e| {
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}"))
+            })?;
+        stmt.query_row(params![file_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?
+                    .unwrap_or_else(|| "file".to_string()),
+                row.get::<_, Option<String>>(1)?
+                    .unwrap_or_else(|| "application/octet-stream".to_string()),
+            ))
+        })
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?
+    };
+
+    let path = state.files_dir.join(&file_id);
+    let file = fs::File::open(&path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?;
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    let mut resp = Response::new(body);
+    let headers = resp.headers_mut();
+
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&mime_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+
+    if query.get("download").map(String::as_str) == Some("1") {
+        let dispo = format!("attachment; filename=\"{}\"", file_name.replace('"', ""));
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&dispo)
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        );
+    }
+
+    Ok(resp)
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("启动失败: {}", e.message);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), AppError> {
+    let base_dir = env::current_dir()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取目录失败: {e}")))?;
+    let config_path = env::var("FASTFILE_CONFIG_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| base_dir.join("fastfile.env"));
+    let file_map = load_config_map(&config_path);
+
+    let storage_root = file_map
+        .get("FASTFILE_STORAGE")
+        .map(PathBuf::from)
+        .or_else(|| env::var("FASTFILE_STORAGE").ok().map(PathBuf::from))
+        .unwrap_or_else(|| base_dir.join("storage"));
+    let files_dir = storage_root.join("files");
+    let db_path = storage_root.join("messages.db");
+
+    let initial_runtime_config = load_runtime_config(&config_path);
+    let runtime_config = Arc::new(RwLock::new(initial_runtime_config));
+
+    init_storage(&storage_root, &files_dir, &db_path)?;
+
+    let state = AppState {
+        db_path,
+        files_dir,
+        runtime_config: runtime_config.clone(),
+        sessions: Arc::new(Mutex::new(HashMap::new())),
+    };
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let cfg = load_runtime_config(&config_path);
+            let mut guard = runtime_config.write().await;
+            *guard = cfg;
+        }
+    });
+
+    let app = Router::new()
+        .route("/", get(index_page))
+        .route("/api/healthz", get(healthz))
+        .route("/api/auth", post(auth))
+        .route("/api/messages", get(list_messages).delete(delete_messages))
+        .route("/api/messages/text", post(create_text_message))
+        .route("/api/messages/file", post(create_file_message))
+        .route("/f/:file_id/*display_name", get(direct_file))
+        .layer(DefaultBodyLimit::disable())
+        .layer(middleware::from_fn(no_cache_middleware))
+        .with_state(state);
+
+    let addr: SocketAddr = "0.0.0.0:8000"
+        .parse()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("地址解析失败: {e}")))?;
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("监听失败: {e}")))?;
+
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("服务异常: {e}")))
+}
+
+fn load_runtime_config(config_path: &Path) -> RuntimeConfig {
+    let file_map = load_config_map(config_path);
+
+    let password = file_map
+        .get("FASTFILE_PASSWORD")
+        .cloned()
+        .or_else(|| env::var("FASTFILE_PASSWORD").ok())
+        .unwrap_or_else(|| "REDACTED_PASSWORD".to_string());
+
+    let session_ttl_seconds = file_map
+        .get("FASTFILE_SESSION_TTL_SECONDS")
+        .and_then(|v| v.parse::<i64>().ok())
+        .or_else(|| {
+            env::var("FASTFILE_SESSION_TTL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+        })
+        .filter(|v| *v > 0)
+        .unwrap_or(86_400);
+
+    RuntimeConfig {
+        password,
+        session_ttl_seconds,
+    }
+}
+
+fn load_config_map(config_path: &Path) -> HashMap<String, String> {
+    let mut file_map: HashMap<String, String> = HashMap::new();
+    if let Ok(iter) = dotenvy::from_path_iter(config_path) {
+        for (k, v) in iter.flatten() {
+            file_map.insert(k, v);
+        }
+    }
+    file_map
+}
