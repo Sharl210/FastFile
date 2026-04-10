@@ -13,6 +13,7 @@
 - 单密码访问（默认 `REDACTED_PASSWORD`）
 - 全局 no-cache
 - 配置文件热加载（每 3 秒）
+- 网页重启服务按钮（5 秒内二次确认）
 
 ## 运行（本地）
 
@@ -20,7 +21,7 @@
 cargo run --release
 ```
 
-默认地址：`http://127.0.0.1:8000`
+默认地址：`http://127.0.0.1:21443`
 
 ## 配置文件（热加载）
 
@@ -32,6 +33,8 @@ cargo run --release
   - `FASTFILE_SESSION_TTL_SECONDS`
 - 启动期变量（建议改完重启）：
   - `FASTFILE_STORAGE`
+  - `FASTFILE_PORT`
+  - `FASTFILE_ALLOW_WEB_RESTART`
 
 你现在要求线上密码是 `REDACTED_PASSWORD`，默认配置已是这个值。
 
@@ -74,8 +77,16 @@ cd /opt/fastfile/fastfile-x86_64-unknown-linux-gnu
 ```env
 FASTFILE_PASSWORD=REDACTED_PASSWORD
 FASTFILE_STORAGE=/data/fastfile
+FASTFILE_PORT=21443
+FASTFILE_ALLOW_WEB_RESTART=1
 FASTFILE_SESSION_TTL_SECONDS=86400
 ```
+
+网页重启按钮安全策略：
+
+- 前端必须 5 秒内二次确认才会发起重启请求。
+- 后端仅在 systemd 托管环境（检测 `INVOCATION_ID`）才允许执行重启。
+- 若非 systemd 环境，会直接拒绝，避免“重启后拉不起来”。
 
 并创建存储目录：
 
@@ -89,7 +100,7 @@ mkdir -p /data/fastfile
 ./fastfile
 ```
 
-浏览器访问 `http://服务器IP:8000`，确认可登录、上传、下载、删除。
+浏览器访问 `http://服务器IP:21443`，确认可登录、上传、下载、删除。
 
 ### 5) 配置 systemd 常驻
 
@@ -132,7 +143,7 @@ server {
     client_max_body_size 0;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:21443;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

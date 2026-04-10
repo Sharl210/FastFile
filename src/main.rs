@@ -30,6 +30,7 @@ struct AppState {
     db_path: PathBuf,
     files_dir: PathBuf,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
+    startup_config: StartupConfig,
     sessions: Arc<Mutex<HashMap<String, i64>>>,
 }
 
@@ -37,6 +38,11 @@ struct AppState {
 struct RuntimeConfig {
     password: String,
     session_ttl_seconds: i64,
+}
+
+#[derive(Clone)]
+struct StartupConfig {
+    allow_web_restart: bool,
 }
 
 #[derive(Serialize)]
@@ -72,6 +78,12 @@ struct DeleteRequest {
 #[derive(Serialize)]
 struct DeleteResponse {
     deleted: usize,
+}
+
+#[derive(Serialize)]
+struct RestartResponse {
+    accepted: bool,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -516,6 +528,37 @@ async fn direct_file(
     Ok(resp)
 }
 
+async fn restart_service(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<RestartResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    if !state.startup_config.allow_web_restart {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "已禁用网页重启，请设置 FASTFILE_ALLOW_WEB_RESTART=1 并重启服务",
+        ));
+    }
+
+    if env::var_os("INVOCATION_ID").is_none() {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "当前非 systemd 托管环境。为避免重启后拉不起来，拒绝网页重启",
+        ));
+    }
+
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        std::process::exit(0);
+    });
+
+    Ok(Json(RestartResponse {
+        accepted: true,
+        message: "重启请求已接受，服务即将重启".to_string(),
+    }))
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
@@ -537,6 +580,20 @@ async fn run() -> Result<(), AppError> {
         .map(PathBuf::from)
         .or_else(|| env::var("FASTFILE_STORAGE").ok().map(PathBuf::from))
         .unwrap_or_else(|| base_dir.join("storage"));
+    let port = file_map
+        .get("FASTFILE_PORT")
+        .and_then(|v| v.parse::<u16>().ok())
+        .or_else(|| env::var("FASTFILE_PORT").ok().and_then(|v| v.parse::<u16>().ok()))
+        .unwrap_or(21_443);
+    let allow_web_restart = file_map
+        .get("FASTFILE_ALLOW_WEB_RESTART")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .or_else(|| {
+            env::var("FASTFILE_ALLOW_WEB_RESTART")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        })
+        .unwrap_or(true);
     let files_dir = storage_root.join("files");
     let db_path = storage_root.join("messages.db");
 
@@ -549,6 +606,7 @@ async fn run() -> Result<(), AppError> {
         db_path,
         files_dir,
         runtime_config: runtime_config.clone(),
+        startup_config: StartupConfig { allow_web_restart },
         sessions: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -568,12 +626,13 @@ async fn run() -> Result<(), AppError> {
         .route("/api/messages", get(list_messages).delete(delete_messages))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))
+        .route("/api/admin/restart", post(restart_service))
         .route("/f/:file_id/*display_name", get(direct_file))
         .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn(no_cache_middleware))
         .with_state(state);
 
-    let addr: SocketAddr = "0.0.0.0:8000"
+    let addr: SocketAddr = format!("0.0.0.0:{port}")
         .parse()
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("地址解析失败: {e}")))?;
 
