@@ -16,3 +16,5 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 urlencoding = "2"
 dotenvy = "0.15"
+sha2 = "0.10"
+hex = "0.4"

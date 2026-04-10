@@ -17,11 +17,12 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt};
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use urlencoding::encode;
@@ -105,9 +106,18 @@ struct UploadInitRequest {
 struct UploadInitResponse {
     upload_id: String,
     chunk_size: usize,
+    parallel_limit: usize,
     received_bytes: i64,
     total_bytes: i64,
+    completed_parts: Vec<UploadedPartDto>,
     done: bool,
+}
+
+#[derive(Serialize)]
+struct UploadedPartDto {
+    start_byte: i64,
+    end_byte: i64,
+    checksum: String,
 }
 
 #[derive(Serialize)]
@@ -131,6 +141,13 @@ struct UploadCancelRequest {
 #[derive(Serialize)]
 struct UploadCancelResponse {
     cancelled: bool,
+}
+
+#[derive(Debug)]
+struct UploadedPart {
+    start_byte: i64,
+    end_byte: i64,
+    checksum: String,
 }
 
 #[derive(Serialize)]
@@ -276,6 +293,15 @@ fn init_storage(
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS upload_chunks (
+            upload_id TEXT NOT NULL,
+            start_byte INTEGER NOT NULL,
+            end_byte INTEGER NOT NULL,
+            chunk_size INTEGER NOT NULL,
+            checksum_hex TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (upload_id, start_byte)
+        );
         ",
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("建表失败: {e}")))?;
@@ -304,6 +330,85 @@ fn row_to_dto(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageDto> {
         file_url,
         download_url,
     })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn load_uploaded_parts(conn: &Connection, upload_id: &str) -> Result<Vec<UploadedPart>, AppError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT start_byte, end_byte, checksum_hex FROM upload_chunks WHERE upload_id = ?1 ORDER BY start_byte ASC",
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询分片失败: {e}")))?;
+    let rows = stmt
+        .query_map(params![upload_id], |row| {
+            Ok(UploadedPart {
+                start_byte: row.get(0)?,
+                end_byte: row.get(1)?,
+                checksum: row.get(2)?,
+            })
+        })
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取分片失败: {e}")))?;
+
+    let mut parts = Vec::new();
+    for row in rows {
+        parts.push(row.map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取分片失败: {e}")))?);
+    }
+    Ok(parts)
+}
+
+fn total_uploaded_bytes(parts: &[UploadedPart]) -> i64 {
+    parts.iter().map(|part| part.end_byte - part.start_byte).sum()
+}
+
+fn parse_range_header(range_header: &str, total_size: u64) -> Result<Option<(u64, u64)>, AppError> {
+    if total_size == 0 {
+        return Ok(None);
+    }
+
+    let value = range_header.trim();
+    if !value.starts_with("bytes=") {
+        return Ok(None);
+    }
+    let spec = &value[6..];
+    if spec.contains(',') {
+        return Err(AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "暂不支持多段下载"));
+    }
+
+    let (start_raw, end_raw) = spec
+        .split_once('-')
+        .ok_or_else(|| AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "Range 格式错误"))?;
+
+    let last_index = total_size - 1;
+    if start_raw.is_empty() {
+        let suffix = end_raw
+            .parse::<u64>()
+            .map_err(|_| AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "Range 格式错误"))?;
+        if suffix == 0 {
+            return Err(AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "Range 超出范围"));
+        }
+        let start = total_size.saturating_sub(suffix);
+        return Ok(Some((start, last_index)));
+    }
+
+    let start = start_raw
+        .parse::<u64>()
+        .map_err(|_| AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "Range 格式错误"))?;
+    let end = if end_raw.is_empty() {
+        last_index
+    } else {
+        end_raw
+            .parse::<u64>()
+            .map_err(|_| AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "Range 格式错误"))?
+    };
+
+    if start > end || start >= total_size {
+        return Err(AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, "Range 超出范围"));
+    }
+
+    Ok(Some((start, end.min(last_index))))
 }
 
 async fn no_cache_middleware(req: Request<Body>, next: Next) -> Response {
@@ -515,6 +620,7 @@ async fn init_upload(
     }
 
     let chunk_size = 4 * 1024 * 1024;
+    let parallel_limit = 4;
     let conn = open_conn(&state.db_path)?;
 
     let existing = conn
@@ -535,26 +641,29 @@ async fn init_upload(
         )
         .ok();
 
-    if let Some((upload_id, file_name, file_size, _mime, mut received, temp_path, status)) = existing {
+    if let Some((upload_id, file_name, file_size, _mime, _received, temp_path, status)) = existing {
         if status == "uploading" && file_name == payload.file_name && file_size == payload.file_size {
-            let meta_len = fs::metadata(&temp_path)
-                .await
-                .ok()
-                .and_then(|m| i64::try_from(m.len()).ok())
-                .unwrap_or(0);
-            if meta_len != received {
-                received = meta_len.min(payload.file_size);
-                conn.execute(
-                    "UPDATE upload_sessions SET received_bytes = ?1, updated_at = ?2 WHERE upload_id = ?3",
-                    params![received, now_iso(), upload_id],
-                )
-                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("更新会话失败: {e}")))?;
-            }
+            let parts = load_uploaded_parts(&conn, &upload_id)?;
+            let received = total_uploaded_bytes(&parts).min(payload.file_size);
+            conn.execute(
+                "UPDATE upload_sessions SET received_bytes = ?1, updated_at = ?2 WHERE upload_id = ?3",
+                params![received, now_iso(), upload_id],
+            )
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("更新会话失败: {e}")))?;
             return Ok(Json(UploadInitResponse {
                 upload_id,
                 chunk_size,
+                parallel_limit,
                 received_bytes: received,
                 total_bytes: payload.file_size,
+                completed_parts: parts
+                    .into_iter()
+                    .map(|part| UploadedPartDto {
+                        start_byte: part.start_byte,
+                        end_byte: part.end_byte,
+                        checksum: part.checksum,
+                    })
+                    .collect(),
                 done: received >= payload.file_size,
             }));
         }
@@ -564,6 +673,11 @@ async fn init_upload(
             params![upload_id],
         )
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理旧会话失败: {e}")))?;
+        conn.execute(
+            "DELETE FROM upload_chunks WHERE upload_id = ?1",
+            params![upload_id],
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理旧分片失败: {e}")))?;
 
         let _ = fs::remove_file(temp_path).await;
     }
@@ -592,8 +706,10 @@ async fn init_upload(
     Ok(Json(UploadInitResponse {
         upload_id,
         chunk_size,
+        parallel_limit,
         received_bytes: 0,
         total_bytes: payload.file_size,
+        completed_parts: Vec::new(),
         done: false,
     }))
 }
@@ -615,9 +731,20 @@ async fn upload_chunk(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok())
         .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "缺少 x-start-byte"))?;
+    let checksum = headers
+        .get("x-chunk-sha256")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "缺少 x-chunk-sha256"))?;
+    let incoming = i64::try_from(body.len())
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "分片过大"))?;
+    let end_byte = start_byte + incoming;
+    if start_byte < 0 || incoming <= 0 {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "分片范围无效"));
+    }
 
     let conn = open_conn(&state.db_path)?;
-    let (file_size, mut received_bytes, temp_path, status): (i64, i64, String, String) = conn
+    let (file_size, _received_bytes, temp_path, status): (i64, i64, String, String) = conn
         .query_row(
             "SELECT file_size, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1",
             params![upload_id],
@@ -636,26 +763,47 @@ async fn upload_chunk(
         return Err(AppError::new(StatusCode::CONFLICT, "上传会话不可用"));
     }
 
-    let meta_len = fs::metadata(&temp_path)
-        .await
-        .ok()
-        .and_then(|m| i64::try_from(m.len()).ok())
-        .unwrap_or(0);
-    if meta_len != received_bytes {
-        received_bytes = meta_len.min(file_size);
-    }
-
-    if start_byte != received_bytes {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            format!("断点偏移不匹配，期望 {received_bytes}"),
-        ));
-    }
-
-    let incoming = i64::try_from(body.len())
-        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "分片过大"))?;
-    if received_bytes + incoming > file_size {
+    if end_byte > file_size {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "分片超出文件总大小"));
+    }
+
+    let existing_same: Option<(i64, i64, String)> = conn
+        .query_row(
+            "SELECT start_byte, end_byte, checksum_hex FROM upload_chunks WHERE upload_id = ?1 AND start_byte = ?2",
+            params![upload_id, start_byte],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+
+    if let Some((_, existing_end, existing_checksum)) = existing_same {
+        if existing_end != end_byte || existing_checksum != checksum {
+            return Err(AppError::new(StatusCode::CONFLICT, "分片校验不匹配"));
+        }
+        let parts = load_uploaded_parts(&conn, &upload_id)?;
+        let uploaded = total_uploaded_bytes(&parts);
+        return Ok(Json(UploadChunkResponse {
+            upload_id,
+            received_bytes: uploaded,
+            total_bytes: file_size,
+            done: uploaded >= file_size,
+        }));
+    }
+
+    let overlap_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM upload_chunks WHERE upload_id = ?1 AND start_byte < ?3 AND end_byte > ?2",
+            params![upload_id, start_byte, end_byte],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询分片冲突失败: {e}")))?;
+
+    if overlap_count > 0 {
+        return Err(AppError::new(StatusCode::CONFLICT, "分片范围与已有数据重叠"));
+    }
+
+    let actual_checksum = sha256_hex(&body);
+    if actual_checksum != checksum {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "分片校验失败"));
     }
 
     let mut file = fs::OpenOptions::new()
@@ -672,7 +820,14 @@ async fn upload_chunk(
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入分片失败: {e}")))?;
 
-    let new_received = received_bytes + incoming;
+    conn.execute(
+        "INSERT INTO upload_chunks (upload_id, start_byte, end_byte, chunk_size, checksum_hex, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![upload_id, start_byte, end_byte, incoming, checksum, now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("记录分片失败: {e}")))?;
+
+    let parts = load_uploaded_parts(&conn, &upload_id)?;
+    let new_received = total_uploaded_bytes(&parts);
     let done = new_received >= file_size;
 
     conn.execute(
@@ -732,6 +887,18 @@ async fn complete_upload(
         ));
     }
 
+    let parts = load_uploaded_parts(&conn, &payload.upload_id)?;
+    let mut expected_start = 0_i64;
+    for part in &parts {
+        if part.start_byte != expected_start {
+            return Err(AppError::new(StatusCode::CONFLICT, "文件分片不完整，无法合并"));
+        }
+        expected_start = part.end_byte;
+    }
+    if expected_start != file_size {
+        return Err(AppError::new(StatusCode::CONFLICT, "文件分片尚未完整上传"));
+    }
+
     let file_id = create_token();
     let final_path = state.files_dir.join(&file_id);
     if let Err(rename_err) = fs::rename(&temp_path, &final_path).await {
@@ -766,6 +933,11 @@ async fn complete_upload(
         params![payload.upload_id],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理上传会话失败: {e}")))?;
+    conn.execute(
+        "DELETE FROM upload_chunks WHERE upload_id = ?1",
+        params![payload.upload_id],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理上传分片失败: {e}")))?;
 
     let mut stmt = conn
         .prepare("SELECT * FROM messages WHERE id = ?1")
@@ -799,6 +971,11 @@ async fn cancel_upload(
             params![payload.upload_id],
         )
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除会话失败: {e}")))?;
+        conn.execute(
+            "DELETE FROM upload_chunks WHERE upload_id = ?1",
+            params![payload.upload_id],
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除分片失败: {e}")))?;
         let _ = fs::remove_file(path).await;
         return Ok(Json(UploadCancelResponse { cancelled: true }));
     }
@@ -895,13 +1072,38 @@ async fn direct_file(
     };
 
     let path = state.files_dir.join(&file_id);
-    let file = fs::File::open(&path)
+    let mut file = fs::File::open(&path)
         .await
         .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?;
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取文件信息失败: {e}")))?;
+    let total_size = metadata.len();
 
-    let stream = ReaderStream::new(file);
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| parse_range_header(v, total_size))
+        .transpose()?
+        .flatten();
+
+    let (start, end, status) = match range {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, total_size.saturating_sub(1), StatusCode::OK),
+    };
+
+    let length = if total_size == 0 { 0 } else { end - start + 1 };
+    if length > 0 {
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("定位文件失败: {e}")))?;
+    }
+
+    let stream = ReaderStream::new(file.take(length));
     let body = Body::from_stream(stream);
     let mut resp = Response::new(body);
+    *resp.status_mut() = status;
     let headers = resp.headers_mut();
 
     headers.insert(
@@ -909,6 +1111,20 @@ async fn direct_file(
         HeaderValue::from_str(&mime_type)
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&length.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("0")),
+    );
+    if status == StatusCode::PARTIAL_CONTENT {
+        let content_range = format!("bytes {start}-{end}/{total_size}");
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&content_range)
+                .unwrap_or_else(|_| HeaderValue::from_static("bytes */0")),
+        );
+    }
 
     if query.get("download").map(String::as_str) == Some("1") {
         let dispo = format!("attachment; filename=\"{}\"", file_name.replace('"', ""));
