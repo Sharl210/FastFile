@@ -143,6 +143,28 @@ struct UploadCancelResponse {
     cancelled: bool,
 }
 
+#[derive(Deserialize)]
+struct UiStateUpdateRequest {
+    chat_height_px: Option<i64>,
+    input_height_px: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct UiStateResponse {
+    chat_height_px: Option<i64>,
+    input_height_px: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct VideoProgressResponse {
+    position_seconds: f64,
+}
+
+#[derive(Deserialize)]
+struct VideoProgressRequest {
+    position_seconds: f64,
+}
+
 #[derive(Debug)]
 struct UploadedPart {
     start_byte: i64,
@@ -302,6 +324,16 @@ fn init_storage(
             created_at TEXT NOT NULL,
             PRIMARY KEY (upload_id, start_byte)
         );
+        CREATE TABLE IF NOT EXISTS ui_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS video_progress (
+            file_id TEXT PRIMARY KEY,
+            position_seconds REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         ",
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("建表失败: {e}")))?;
@@ -411,6 +443,32 @@ fn parse_range_header(range_header: &str, total_size: u64) -> Result<Option<(u64
     Ok(Some((start, end.min(last_index))))
 }
 
+fn get_ui_state_value(conn: &Connection, key: &str) -> Result<Option<i64>, AppError> {
+    let value = conn
+        .query_row(
+            "SELECT value FROM ui_state WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    Ok(value.and_then(|v| v.parse::<i64>().ok()))
+}
+
+fn set_ui_state_value(conn: &Connection, key: &str, value: i64) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO ui_state (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value.to_string(), now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("保存界面状态失败: {e}")))?;
+    Ok(())
+}
+
+fn delete_ui_state_key(conn: &Connection, key: &str) -> Result<(), AppError> {
+    conn.execute("DELETE FROM ui_state WHERE key = ?1", params![key])
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("重置界面状态失败: {e}")))?;
+    Ok(())
+}
+
 async fn no_cache_middleware(req: Request<Body>, next: Next) -> Response {
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
@@ -505,6 +563,105 @@ async fn list_messages(
         );
     }
     Ok(Json(out))
+}
+
+async fn get_ui_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<UiStateResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    Ok(Json(UiStateResponse {
+        chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
+        input_height_px: get_ui_state_value(&conn, "input_height_px")?,
+    }))
+}
+
+async fn update_ui_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UiStateUpdateRequest>,
+) -> Result<Json<UiStateResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    if let Some(height) = payload.chat_height_px {
+        if !(320..=2000).contains(&height) {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "聊天区高度超出范围"));
+        }
+        set_ui_state_value(&conn, "chat_height_px", height)?;
+    }
+    if let Some(height) = payload.input_height_px {
+        if !(110..=900).contains(&height) {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "输入框高度超出范围"));
+        }
+        set_ui_state_value(&conn, "input_height_px", height)?;
+    }
+
+    Ok(Json(UiStateResponse {
+        chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
+        input_height_px: get_ui_state_value(&conn, "input_height_px")?,
+    }))
+}
+
+async fn reset_ui_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<UiStateResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+    let conn = open_conn(&state.db_path)?;
+    delete_ui_state_key(&conn, "chat_height_px")?;
+    delete_ui_state_key(&conn, "input_height_px")?;
+    Ok(Json(UiStateResponse {
+        chat_height_px: None,
+        input_height_px: None,
+    }))
+}
+
+async fn get_video_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(file_id): AxumPath<String>,
+) -> Result<Json<VideoProgressResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    let position = conn
+        .query_row(
+            "SELECT position_seconds FROM video_progress WHERE file_id = ?1",
+            params![file_id],
+            |row| row.get::<_, f64>(0),
+        )
+        .unwrap_or(0.0);
+
+    Ok(Json(VideoProgressResponse {
+        position_seconds: position.max(0.0),
+    }))
+}
+
+async fn update_video_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(file_id): AxumPath<String>,
+    Json(payload): Json<VideoProgressRequest>,
+) -> Result<Json<VideoProgressResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    if !payload.position_seconds.is_finite() || payload.position_seconds < 0.0 {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "播放进度无效"));
+    }
+
+    let conn = open_conn(&state.db_path)?;
+    conn.execute(
+        "INSERT INTO video_progress (file_id, position_seconds, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(file_id) DO UPDATE SET position_seconds = excluded.position_seconds, updated_at = excluded.updated_at",
+        params![file_id, payload.position_seconds, now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("保存视频进度失败: {e}")))?;
+
+    Ok(Json(VideoProgressResponse {
+        position_seconds: payload.position_seconds,
+    }))
 }
 
 async fn create_text_message(
@@ -1036,6 +1193,13 @@ async fn delete_messages(
         }
     }
 
+    if !file_ids.is_empty() {
+        let progress_placeholders = vec!["?"; file_ids.len()].join(",");
+        let progress_sql = format!("DELETE FROM video_progress WHERE file_id IN ({progress_placeholders})");
+        conn.execute(&progress_sql, rusqlite::params_from_iter(file_ids.iter()))
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理视频进度失败: {e}")))?;
+    }
+
     let deleted = conn
         .execute(&sql_del, rusqlite::params_from_iter(ids.iter().copied()))
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
@@ -1045,11 +1209,10 @@ async fn delete_messages(
 
 async fn direct_file(
     State(state): State<AppState>,
-    headers: HeaderMap,
     AxumPath(path): AxumPath<FileRoutePath>,
+    headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    require_auth(&headers, &state).await?;
     let file_id = path.file_id;
     let _display_name = path.display_name;
 
@@ -1236,6 +1399,9 @@ async fn run() -> Result<(), AppError> {
         .route("/api/healthz", get(healthz))
         .route("/api/auth", post(auth))
         .route("/api/logout", post(logout))
+        .route("/api/ui-state", get(get_ui_state).put(update_ui_state))
+        .route("/api/ui-state/reset", post(reset_ui_state))
+        .route("/api/video-progress/:file_id", get(get_video_progress).put(update_video_progress))
         .route("/api/messages", get(list_messages).delete(delete_messages))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))

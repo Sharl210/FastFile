@@ -490,6 +490,7 @@
           </select>
         </label>
         <button id="deleteBtn" class="danger">删除已勾选</button>
+        <button id="resetSizeBtn">恢复默认大小</button>
         <button id="restartBtn" class="danger">重启服务</button>
         <button id="logoutBtn" class="danger">退出登录</button>
       </div>
@@ -504,7 +505,7 @@
     </div>
 
     <div class="panel">
-      <textarea id="textInput" placeholder="输入要发送的文本（Ctrl + Enter 发送）"></textarea>
+      <textarea id="textInput" placeholder="输入要发送的文本（Enter 发送，Ctrl + Enter 换行）"></textarea>
       <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
         <div style="position:relative;">
           <button id="plusMenuBtn" title="上传菜单">＋</button>
@@ -561,6 +562,7 @@
     const invertSelectBtn = document.getElementById('invertSelectBtn');
     const filterSelect = document.getElementById('filterSelect');
     const deleteBtn = document.getElementById('deleteBtn');
+    const resetSizeBtn = document.getElementById('resetSizeBtn');
 
     const uploadTasksBtn = document.getElementById('uploadTasksBtn');
     const uploadTaskOverlay = document.getElementById('uploadTaskOverlay');
@@ -596,6 +598,8 @@
     let uploadTaskSeq = 1;
     const REMEMBER_PASSWORD_KEY = 'fastfile.remember_password';
     const SELF_MESSAGE_IDS_KEY = 'fastfile.self_message_ids';
+    const DEFAULT_CHAT_HEIGHT = '66vh';
+    const DEFAULT_INPUT_HEIGHT = '110px';
     let mediaList = [];
     let mediaIndex = -1;
     let lastAppliedSnapshot = '';
@@ -604,6 +608,10 @@
     let pollingInFlight = false;
     let scrollAnimationFrame = 0;
     const selfMessageIds = new Set();
+    const mediaProgressCache = new Map();
+    let uiStateSaveTimer = 0;
+    let suppressUiResizeSave = false;
+    let videoProgressSaveTimer = 0;
 
     const SCROLL_EDGE_THRESHOLD = 24;
     const SMOOTH_SCROLL_DURATION = 1500;
@@ -709,6 +717,66 @@
       scrollFabGroup.classList.toggle('hidden', shouldShow);
       scrollTopBtn.disabled = isChatNearTop();
       scrollBottomBtn.disabled = isChatNearBottom();
+    }
+
+    function applyUiState({ chat_height_px, input_height_px }) {
+      suppressUiResizeSave = true;
+      chat.style.height = chat_height_px ? `${chat_height_px}px` : DEFAULT_CHAT_HEIGHT;
+      textInput.style.height = input_height_px ? `${input_height_px}px` : DEFAULT_INPUT_HEIGHT;
+      updateScrollButtonState();
+      setTimeout(() => {
+        suppressUiResizeSave = false;
+      }, 0);
+    }
+
+    async function fetchUiState() {
+      return api('/api/ui-state');
+    }
+
+    async function saveUiState(partial) {
+      if (!token) return;
+      await api('/api/ui-state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(partial),
+      });
+    }
+
+    function scheduleUiStateSave() {
+      if (suppressUiResizeSave || !token) return;
+      if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
+      uiStateSaveTimer = setTimeout(() => {
+        saveUiState({
+          chat_height_px: Math.round(chat.getBoundingClientRect().height),
+          input_height_px: Math.round(textInput.getBoundingClientRect().height),
+        }).catch(() => {});
+      }, 400);
+    }
+
+    async function restoreDefaultUiState() {
+      await api('/api/ui-state/reset', { method: 'POST' });
+      applyUiState({ chat_height_px: null, input_height_px: null });
+    }
+
+    async function fetchVideoProgress(fileId) {
+      if (mediaProgressCache.has(fileId)) {
+        return mediaProgressCache.get(fileId);
+      }
+      const result = await api(`/api/video-progress/${encodeURIComponent(fileId)}`);
+      const value = Number(result.position_seconds || 0);
+      mediaProgressCache.set(fileId, value);
+      return value;
+    }
+
+    async function saveVideoProgress(fileId, positionSeconds) {
+      if (!token || !fileId) return;
+      const safePosition = Math.max(0, Number(positionSeconds || 0));
+      mediaProgressCache.set(fileId, safePosition);
+      await api(`/api/video-progress/${encodeURIComponent(fileId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position_seconds: safePosition }),
+      });
     }
 
     function easeInOutCubic(t) {
@@ -858,21 +926,33 @@
           img.alt = msg.file_name || 'image';
           img.style.cursor = 'pointer';
           img.title = '点击预览（支持上一条/下一条）';
-          img.onclick = () => openMediaByMessageId(msg.id);
+          img.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
           bubble.appendChild(img);
         } else if ((msg.mime_type || '').startsWith('video/')) {
           const video = document.createElement('video');
           video.className = 'thumb';
-          video.preload = 'metadata';
+          video.preload = 'auto';
           video.muted = true;
           video.playsInline = true;
-          video.src = msg.file_url;
+          video.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+          video.src = `${msg.file_url}#t=0.08`;
           video.style.cursor = 'pointer';
           video.title = '点击放大播放（支持上一条/下一条）';
+          video.addEventListener('loadedmetadata', () => {
+            const previewTime = Math.min(0.08, Math.max(0.001, (video.duration || 0) / 4));
+            if (previewTime > 0) {
+              try {
+                video.currentTime = previewTime;
+              } catch (_) {}
+            }
+          }, { once: true });
+          video.addEventListener('seeked', () => {
+            video.pause();
+          });
           video.onclick = (e) => {
             e.preventDefault();
             video.pause();
-            openMediaByMessageId(msg.id);
+            openMediaByMessageId(msg.id).catch(() => {});
           };
           bubble.appendChild(video);
         }
@@ -986,9 +1066,11 @@
       }
     }
 
-    function showMediaAt(index) {
+    async function showMediaAt(index) {
       if (!mediaList.length) return;
       if (index < 0 || index >= mediaList.length) return;
+
+      await persistActiveVideoProgress();
 
       mediaIndex = index;
       const item = mediaList[mediaIndex];
@@ -1007,6 +1089,23 @@
         video.autoplay = true;
         video.playsInline = true;
         video.addEventListener('play', () => pauseOtherVideos(video));
+        if (item.file_id) {
+          const savedPosition = await fetchVideoProgress(item.file_id);
+          video.addEventListener('loadedmetadata', () => {
+            if (savedPosition > 0 && savedPosition < video.duration) {
+              video.currentTime = savedPosition;
+            }
+          }, { once: true });
+          video.addEventListener('timeupdate', () => {
+            if (videoProgressSaveTimer) clearTimeout(videoProgressSaveTimer);
+            videoProgressSaveTimer = setTimeout(() => {
+              saveVideoProgress(item.file_id, video.currentTime).catch(() => {});
+            }, 500);
+          });
+          video.addEventListener('pause', () => {
+            saveVideoProgress(item.file_id, video.currentTime).catch(() => {});
+          });
+        }
         mediaStage.appendChild(video);
       }
 
@@ -1018,25 +1117,26 @@
       requestAnimationFrame(() => mediaDialog.focus());
     }
 
-    function openMediaByMessageId(messageId) {
+    async function openMediaByMessageId(messageId) {
       buildMediaList();
       const index = mediaList.findIndex((m) => m.id === messageId);
       if (index < 0) return;
-      showMediaAt(index);
+      await showMediaAt(index);
     }
 
-    function closeMediaViewer() {
+    async function closeMediaViewer() {
+      await persistActiveVideoProgress();
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
       mediaIndex = -1;
       syncMediaHistoryContext(false);
     }
 
-    function switchMedia(delta) {
+    async function switchMedia(delta) {
       if (mediaIndex < 0) return;
       const next = mediaIndex + delta;
       if (next < 0 || next >= mediaList.length) return;
-      showMediaAt(next);
+      await showMediaAt(next);
     }
 
     function updateManageUi() {
@@ -1104,6 +1204,8 @@
         passwordInput.value = '';
         loadSelfMessageIds();
         loginMask.classList.add('hidden');
+        const uiState = await fetchUiState();
+        applyUiState(uiState);
         await loadMessages({ source: 'login', followBottom: true, preserveScroll: false });
         updateScrollButtonState();
       } catch (err) {
@@ -1139,6 +1241,7 @@
       manageMode = false;
       selfMessageIds.clear();
       saveSelfMessageIds();
+      mediaProgressCache.clear();
       pendingMessages = null;
       pendingSnapshot = '';
       lastAppliedSnapshot = '';
@@ -1149,11 +1252,13 @@
       loginMask.classList.remove('hidden');
       updateScrollButtonState();
       try {
-        const cached = localStorage.getItem(REMEMBER_PASSWORD_KEY);
-        passwordInput.value = cached || '';
+        localStorage.removeItem(REMEMBER_PASSWORD_KEY);
+        passwordInput.value = '';
+        rememberPassword.checked = false;
       } catch (_) {
         passwordInput.value = '';
       }
+      applyUiState({ chat_height_px: null, input_height_px: null });
     }
 
     async function sendText() {
@@ -1167,6 +1272,7 @@
       markMessageAsSelf(created.id);
       textInput.value = '';
       await loadMessages({ source: 'send-text', followBottom: true, preserveScroll: false });
+      await animateChatScroll(chat.scrollHeight - chat.clientHeight, 320);
     }
 
     function openUploadTasksPanel() {
@@ -1220,16 +1326,17 @@
       return Math.max(0, (end - task.startedAt) / 1000);
     }
 
-    function updateTaskSpeed(task) {
+    function updateTaskSpeed(task, uploadedDelta = 0) {
       const now = Date.now();
-      const dt = (now - task.lastSampleAt) / 1000;
-      const db = task.uploadedBytes - task.lastSampleBytes;
-      if (dt > 0 && db >= 0) {
-        const instant = db / dt;
-        task.speedBps = task.speedBps > 0 ? task.speedBps * 0.7 + instant * 0.3 : instant;
-        const remain = task.totalBytes - task.uploadedBytes;
-        task.etaSec = task.speedBps > 1 ? remain / task.speedBps : null;
+      task.samples = (task.samples || []).filter((sample) => now - sample.at <= 4000);
+      if (uploadedDelta > 0) {
+        task.samples.push({ at: now, bytes: uploadedDelta });
       }
+      const windowMs = task.samples.length ? Math.max(400, now - task.samples[0].at) : Math.max(400, now - task.startedAt);
+      const windowBytes = task.samples.reduce((sum, sample) => sum + sample.bytes, 0);
+      task.speedBps = windowBytes > 0 ? windowBytes / (windowMs / 1000) : 0;
+      const remain = task.totalBytes - task.uploadedBytes;
+      task.etaSec = task.speedBps > 1 ? remain / task.speedBps : null;
       task.lastSampleAt = now;
       task.lastSampleBytes = task.uploadedBytes;
     }
@@ -1246,6 +1353,13 @@
           video.pause();
         }
       });
+    }
+
+    async function persistActiveVideoProgress() {
+      const item = mediaList[mediaIndex];
+      const activeVideo = mediaStage.querySelector('video');
+      if (!item || !activeVideo || !(item.mime_type || '').startsWith('video/')) return;
+      await saveVideoProgress(item.file_id, activeVideo.currentTime || 0);
     }
 
     function buildChunkPlan(task, chunkSize, completedParts) {
@@ -1373,7 +1487,7 @@
           .filter((chunk) => chunk.done)
           .reduce((sum, chunk) => sum + (chunk.end - chunk.start), 0);
         task.status = 'uploading';
-        updateTaskSpeed(task);
+        updateTaskSpeed(task, 0);
         renderUploadTasks();
 
         const uploadChunk = async (chunk) => {
@@ -1403,7 +1517,7 @@
               task.retries = 0;
               task.status = 'uploading';
               task.error = '';
-              updateTaskSpeed(task);
+              updateTaskSpeed(task, chunk.end - chunk.start);
               renderUploadTasks();
             } catch (err) {
               task.controllers.delete(controller);
@@ -1430,7 +1544,7 @@
               task.uploadId = resumed.upload_id;
               task.chunks = buildChunkPlan(task, chunkSize, resumed.completed_parts || []).map((nextChunk) => {
                 const current = task.chunks.find((item) => item.start === nextChunk.start);
-                return current && current.done ? { ...current, done: true } : nextChunk;
+                return current?.done ? { ...current, done: true } : nextChunk;
               });
               task.uploadedBytes = Number(resumed.received_bytes || task.uploadedBytes);
             }
@@ -1461,7 +1575,7 @@
         task.completedAt = Date.now();
         task.error = '';
         task.controllers.clear();
-        updateTaskSpeed(task);
+        updateTaskSpeed(task, 0);
         renderUploadTasks();
         await loadMessages({ source: 'upload-complete', followBottom: isChatNearBottom(), preserveScroll: !isChatNearBottom() });
       } catch (err) {
@@ -1529,6 +1643,12 @@
         alert('请先勾选要删除的记录');
         return;
       }
+      const deletingIds = new Set(selectedIds);
+      allMessages
+        .filter((msg) => deletingIds.has(msg.id) && msg.file_id)
+        .forEach((msg) => {
+          mediaProgressCache.delete(msg.file_id);
+        });
       await api('/api/messages', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -1551,7 +1671,7 @@
 
     function selectAllVisible() {
       for (const m of getVisibleMessages()) selectedIds.add(m.id);
-      renderMessages();
+      renderMessages({ preserveScroll: true });
     }
 
     function invertVisible() {
@@ -1559,7 +1679,7 @@
         if (selectedIds.has(m.id)) selectedIds.delete(m.id);
         else selectedIds.add(m.id);
       }
-      renderMessages();
+      renderMessages({ preserveScroll: true });
     }
 
     loginBtn.onclick = login;
@@ -1605,6 +1725,7 @@
     };
 
     deleteBtn.onclick = () => handleDeleteClick().catch((e) => alert(e.message));
+    resetSizeBtn.onclick = () => restoreDefaultUiState().catch((e) => alert(e.message));
     selectAllBtn.onclick = selectAllVisible;
     invertSelectBtn.onclick = invertVisible;
     filterSelect.onchange = () => {
@@ -1624,7 +1745,16 @@
     };
 
     textInput.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      if (e.key !== 'Enter') return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const start = textInput.selectionStart ?? textInput.value.length;
+        const end = textInput.selectionEnd ?? textInput.value.length;
+        textInput.value = `${textInput.value.slice(0, start)}\n${textInput.value.slice(end)}`;
+        textInput.selectionStart = textInput.selectionEnd = start + 1;
+        return;
+      }
+      if (!e.shiftKey) {
         e.preventDefault();
         sendText().catch((err) => alert(err.message));
       }
@@ -1661,19 +1791,29 @@
       if (cached) {
         passwordInput.value = cached;
         rememberPassword.checked = true;
+        setTimeout(() => {
+          login().catch(() => {});
+        }, 0);
       }
     } catch (_) {}
 
-    mediaPrevBtn.onclick = () => switchMedia(-1);
-    mediaNextBtn.onclick = () => switchMedia(1);
-    mediaCloseBtn.onclick = closeMediaViewer;
+    const resizeObserver = new ResizeObserver(() => {
+      scheduleUiStateSave();
+      updateScrollButtonState();
+    });
+    resizeObserver.observe(chat);
+    resizeObserver.observe(textInput);
+
+    mediaPrevBtn.onclick = () => switchMedia(-1).catch(() => {});
+    mediaNextBtn.onclick = () => switchMedia(1).catch(() => {});
+    mediaCloseBtn.onclick = () => closeMediaViewer().catch(() => {});
 
     document.addEventListener('click', (e) => {
       if (!plusMenu.contains(e.target) && e.target !== plusMenuBtn) {
         plusMenu.classList.add('hidden');
       }
       if (e.target === mediaViewer) {
-        closeMediaViewer();
+        closeMediaViewer().catch(() => {});
       }
     });
 
@@ -1682,13 +1822,13 @@
       if (e.target === textInput || e.target === passwordInput) return;
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
-        switchMedia(-1);
+        switchMedia(-1).catch(() => {});
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
         e.preventDefault();
-        switchMedia(1);
+        switchMedia(1).catch(() => {});
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        closeMediaViewer();
+        closeMediaViewer().catch(() => {});
       }
     });
 
@@ -1696,15 +1836,15 @@
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         e.stopPropagation();
-        switchMedia(-1);
+        switchMedia(-1).catch(() => {});
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
         e.preventDefault();
         e.stopPropagation();
-        switchMedia(1);
+        switchMedia(1).catch(() => {});
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        closeMediaViewer();
+        closeMediaViewer().catch(() => {});
       }
     });
 
