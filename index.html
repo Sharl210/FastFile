@@ -249,6 +249,53 @@
       align-items: center;
     }
 
+    .media-viewer {
+      position: fixed;
+      inset: 0;
+      background: rgba(12, 20, 32, .78);
+      z-index: 130;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .media-dialog {
+      width: min(980px, 100%);
+      max-height: 90vh;
+      background: #fff;
+      border-radius: 14px;
+      border: 1px solid #d4e1f2;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .media-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .media-stage {
+      flex: 1;
+      min-height: 280px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f2f6fd;
+      border: 1px solid #e0e9f7;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .media-stage img,
+    .media-stage video {
+      width: 100%;
+      max-height: 72vh;
+      object-fit: contain;
+      background: #f2f6fd;
+    }
+
     @media (max-width: 768px) {
       .page { padding: 8px; gap: 8px; }
       #chat { height: 50vh; }
@@ -295,6 +342,21 @@
     </div>
   </div>
 
+  <div class="media-viewer hidden" id="mediaViewer">
+    <div class="media-dialog">
+      <div class="media-head">
+        <strong id="mediaViewerTitle">媒体预览</strong>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="mediaPrevBtn">上一条</button>
+          <button id="mediaNextBtn">下一条</button>
+          <button id="mediaCloseBtn">关闭</button>
+        </div>
+      </div>
+      <div class="media-stage" id="mediaStage"></div>
+      <div class="footer-note" id="mediaViewerHint">提示：键盘 ↑/↓ 可切换上一条/下一条</div>
+    </div>
+  </div>
+
   <div class="page">
     <div class="topbar panel">
       <strong>聊天式文件传输助手</strong>
@@ -329,9 +391,19 @@
 
     <div class="panel">
       <textarea id="textInput" placeholder="输入要发送的文本（Ctrl + Enter 发送）"></textarea>
-      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
+        <div style="position:relative;">
+          <button id="plusMenuBtn" title="上传菜单">＋</button>
+          <div id="plusMenu" class="panel hidden" style="position:absolute; top:42px; left:0; min-width:180px; z-index:70; padding:8px;">
+            <button id="pickImageBtn" style="width:100%; text-align:left; margin-bottom:6px;">图片上传</button>
+            <button id="pickVideoBtn" style="width:100%; text-align:left;">视频上传</button>
+          </div>
+          <input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden" />
+          <input id="videoUploadInput" type="file" accept="video/*" multiple class="hidden" />
+        </div>
         <button id="sendTextBtn" class="primary">发送文本</button>
       </div>
+      <div class="footer-note" style="margin-top:8px;">支持直接粘贴图片到输入框自动上传。</div>
     </div>
 
     <div class="panel">
@@ -355,6 +427,12 @@
     const chat = document.getElementById('chat');
     const refreshBtn = document.getElementById('refreshBtn');
     const sendTextBtn = document.getElementById('sendTextBtn');
+    const plusMenuBtn = document.getElementById('plusMenuBtn');
+    const plusMenu = document.getElementById('plusMenu');
+    const pickImageBtn = document.getElementById('pickImageBtn');
+    const pickVideoBtn = document.getElementById('pickVideoBtn');
+    const imageUploadInput = document.getElementById('imageUploadInput');
+    const videoUploadInput = document.getElementById('videoUploadInput');
     const sendFileBtn = document.getElementById('sendFileBtn');
     const textInput = document.getElementById('textInput');
     const fileInput = document.getElementById('fileInput');
@@ -374,6 +452,13 @@
     const hideTaskPanelBtn = document.getElementById('hideTaskPanelBtn');
     const clearFinishedBtn = document.getElementById('clearFinishedBtn');
 
+    const mediaViewer = document.getElementById('mediaViewer');
+    const mediaStage = document.getElementById('mediaStage');
+    const mediaViewerTitle = document.getElementById('mediaViewerTitle');
+    const mediaPrevBtn = document.getElementById('mediaPrevBtn');
+    const mediaNextBtn = document.getElementById('mediaNextBtn');
+    const mediaCloseBtn = document.getElementById('mediaCloseBtn');
+
     let token = '';
     let allMessages = [];
     let manageMode = false;
@@ -388,6 +473,8 @@
     const uploadTasks = new Map();
     let uploadTaskSeq = 1;
     const REMEMBER_PASSWORD_KEY = 'fastfile.remember_password';
+    let mediaList = [];
+    let mediaIndex = -1;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -493,6 +580,9 @@
           img.className = 'thumb';
           img.src = msg.file_url;
           img.alt = msg.file_name || 'image';
+          img.style.cursor = 'pointer';
+          img.title = '点击预览（支持上一条/下一条）';
+          img.onclick = () => openMediaByMessageId(msg.id);
           bubble.appendChild(img);
         } else if ((msg.mime_type || '').startsWith('video/')) {
           const video = document.createElement('video');
@@ -500,6 +590,12 @@
           video.controls = true;
           video.preload = 'metadata';
           video.src = msg.file_url;
+          video.style.cursor = 'pointer';
+          video.title = '点击放大播放（支持上一条/下一条）';
+          video.onclick = (e) => {
+            e.preventDefault();
+            openMediaByMessageId(msg.id);
+          };
           bubble.appendChild(video);
         }
       }
@@ -520,6 +616,62 @@
       chat.scrollTop = chat.scrollHeight;
     }
 
+    function buildMediaList() {
+      mediaList = allMessages.filter((m) => {
+        if (m.kind !== 'file') return false;
+        const mt = m.mime_type || '';
+        return mt.startsWith('image/') || mt.startsWith('video/');
+      });
+    }
+
+    function showMediaAt(index) {
+      if (!mediaList.length) return;
+      if (index < 0 || index >= mediaList.length) return;
+
+      mediaIndex = index;
+      const item = mediaList[mediaIndex];
+      const mt = item.mime_type || '';
+      mediaStage.innerHTML = '';
+
+      if (mt.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = item.file_url;
+        img.alt = item.file_name || 'image';
+        mediaStage.appendChild(img);
+      } else {
+        const video = document.createElement('video');
+        video.src = item.file_url;
+        video.controls = true;
+        video.autoplay = true;
+        mediaStage.appendChild(video);
+      }
+
+      mediaViewerTitle.textContent = `${item.file_name || '媒体文件'}（${mediaIndex + 1}/${mediaList.length}）`;
+      mediaPrevBtn.disabled = mediaIndex <= 0;
+      mediaNextBtn.disabled = mediaIndex >= mediaList.length - 1;
+      mediaViewer.classList.remove('hidden');
+    }
+
+    function openMediaByMessageId(messageId) {
+      buildMediaList();
+      const index = mediaList.findIndex((m) => m.id === messageId);
+      if (index < 0) return;
+      showMediaAt(index);
+    }
+
+    function closeMediaViewer() {
+      mediaViewer.classList.add('hidden');
+      mediaStage.innerHTML = '';
+      mediaIndex = -1;
+    }
+
+    function switchMedia(delta) {
+      if (mediaIndex < 0) return;
+      const next = mediaIndex + delta;
+      if (next < 0 || next >= mediaList.length) return;
+      showMediaAt(next);
+    }
+
     function updateManageUi() {
       manageBtn.textContent = manageMode ? '退出管理' : '管理';
       managePanel.classList.toggle('hidden', !manageMode);
@@ -533,6 +685,7 @@
 
     async function loadMessages() {
       allMessages = await api('/api/messages');
+      buildMediaList();
       renderMessages();
     }
 
@@ -600,6 +753,14 @@
 
     function makeFileKey(file) {
       return `${file.name}::${file.size}::${file.lastModified}::${file.type}`;
+    }
+
+    function normalizeUploadFile(file) {
+      if (file.name && file.name.trim()) return file;
+      const ext = (file.type || '').split('/')[1] || 'bin';
+      return new File([file], `upload-${Date.now()}.${ext}`, {
+        type: file.type || 'application/octet-stream'
+      });
     }
 
     function createTask(file) {
@@ -810,8 +971,8 @@
       }
     }
 
-    async function sendFiles() {
-      const files = Array.from(fileInput.files || []);
+    async function enqueueFiles(rawFiles) {
+      const files = Array.from(rawFiles || []).map(normalizeUploadFile);
       if (!files.length) return;
 
       openUploadTasksPanel();
@@ -821,6 +982,11 @@
         renderUploadTasks();
         processUploadTask(task);
       }
+    }
+
+    async function sendFiles() {
+      const files = Array.from(fileInput.files || []);
+      await enqueueFiles(files);
       fileInput.value = '';
     }
 
@@ -899,6 +1065,22 @@
     sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
     sendFileBtn.onclick = () => sendFiles().catch((e) => alert(e.message));
 
+    plusMenuBtn.onclick = () => {
+      plusMenu.classList.toggle('hidden');
+    };
+    pickImageBtn.onclick = () => imageUploadInput.click();
+    pickVideoBtn.onclick = () => videoUploadInput.click();
+    imageUploadInput.onchange = () => {
+      enqueueFiles(imageUploadInput.files).catch((e) => alert(e.message));
+      imageUploadInput.value = '';
+      plusMenu.classList.add('hidden');
+    };
+    videoUploadInput.onchange = () => {
+      enqueueFiles(videoUploadInput.files).catch((e) => alert(e.message));
+      videoUploadInput.value = '';
+      plusMenu.classList.add('hidden');
+    };
+
     restartBtn.onclick = () => handleRestartClick().catch((e) => {
       resetRestartButton();
       alert(e.message);
@@ -935,6 +1117,21 @@
       }
     });
 
+    textInput.addEventListener('paste', (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const images = [];
+      for (const item of items) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) images.push(file);
+        }
+      }
+      if (images.length) {
+        e.preventDefault();
+        enqueueFiles(images).catch((err) => alert(err.message));
+      }
+    });
+
     passwordInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') login();
     });
@@ -946,6 +1143,33 @@
         rememberPassword.checked = true;
       }
     } catch (_) {}
+
+    mediaPrevBtn.onclick = () => switchMedia(-1);
+    mediaNextBtn.onclick = () => switchMedia(1);
+    mediaCloseBtn.onclick = closeMediaViewer;
+
+    document.addEventListener('click', (e) => {
+      if (!plusMenu.contains(e.target) && e.target !== plusMenuBtn) {
+        plusMenu.classList.add('hidden');
+      }
+      if (e.target === mediaViewer) {
+        closeMediaViewer();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (mediaViewer.classList.contains('hidden')) return;
+      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        switchMedia(-1);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        switchMedia(1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMediaViewer();
+      }
+    });
 
     setInterval(() => {
       if (token) loadMessages().catch(() => {});
