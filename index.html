@@ -545,44 +545,45 @@
     }
     .audio-shell-info {
       position: absolute;
-      left: 34px;
-      bottom: 86px;
+      left: 54px;
+      bottom: 92px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 6px;
       color: #fff;
       z-index: 2;
-      text-shadow: 0 1px 2px rgba(0,0,0,.3);
+      text-shadow: 0 1px 2px rgba(0,0,0,.24);
     }
     .audio-shell-name {
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 700;
       line-height: 1.2;
+      letter-spacing: .01em;
     }
     .audio-shell-meta {
-      font-size: 14px;
-      color: rgba(255,255,255,0.85);
+      font-size: 13px;
+      color: rgba(255,255,255,0.76);
       display: flex;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
     }
     .audio-shell-footer {
       position: absolute;
-      left: 34px;
-      right: 34px;
-      bottom: 18px;
+      left: 42px;
+      right: 42px;
+      bottom: 32px;
       z-index: 2;
       display: grid;
-      grid-template-columns: auto auto 1fr auto;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
       align-items: center;
-      gap: 16px;
+      gap: 14px;
       color: #fff;
     }
     .audio-shell-progress {
       position: relative;
-      height: 4px;
+      height: 2px;
       border-radius: 999px;
-      background: rgba(79, 216, 255, 0.18);
+      background: rgba(255, 255, 255, 0.1);
       overflow: visible;
       cursor: pointer;
     }
@@ -591,20 +592,20 @@
       inset: 0 auto 0 0;
       width: 0;
       border-radius: inherit;
-      background: #28d9ff;
-      box-shadow: 0 0 10px rgba(40, 217, 255, 0.45);
+      background: linear-gradient(90deg, #f5c14b 0%, #6fe4ff 100%);
+      box-shadow: none;
     }
     .audio-shell-progress-knob {
       position: absolute;
       top: 50%;
       left: 0;
-      width: 18px;
-      height: 18px;
+      width: 8px;
+      height: 8px;
       border-radius: 999px;
       transform: translate(-50%, -50%);
-      border: 2px solid #28d9ff;
-      background: #04131b;
-      box-shadow: 0 0 14px rgba(40, 217, 255, 0.45);
+      border: 1px solid rgba(255,255,255,0.65);
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
     }
     .audio-shell-controls {
       display: contents;
@@ -612,27 +613,29 @@
     .audio-shell-btn {
       border: 0;
       background: transparent;
-      color: #fff;
-      font-size: 24px;
+      color: rgba(255,255,255,0.86);
+      font-size: 16px;
       padding: 0;
       cursor: pointer;
       line-height: 1;
+      opacity: .72;
     }
     .audio-shell-time {
-      font-size: 14px;
-      color: rgba(255,255,255,0.86);
-      min-width: 56px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.64);
+      min-width: 64px;
       font-variant-numeric: tabular-nums;
     }
     .audio-shell-volume-wrap {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       justify-self: end;
     }
     .audio-shell-volume {
-      width: 96px;
-      accent-color: #28d9ff;
+      width: 82px;
+      accent-color: #ffffff;
+      opacity: .38;
     }
     .media-stage .media-placeholder {
       width: 100%;
@@ -1279,8 +1282,17 @@
       }, { once: true });
     }
 
-    function playMediaElement(media) {
-      const tryPlay = () => media.play().catch(() => {});
+    function playMediaElement(media, { unmuteAfterStart = false } = {}) {
+      const tryPlay = () => {
+        const playing = media.play();
+        if (playing && typeof playing.then === 'function') {
+          playing.then(() => {
+            if (unmuteAfterStart) media.muted = false;
+          }).catch(() => {});
+        } else if (unmuteAfterStart) {
+          media.muted = false;
+        }
+      };
       requestAnimationFrame(tryPlay);
       media.addEventListener('loadeddata', tryPlay, { once: true });
       media.addEventListener('canplay', tryPlay, { once: true });
@@ -1297,6 +1309,10 @@
     function createAudioShell(item, audio) {
       const shell = document.createElement('div');
       shell.className = 'audio-view';
+
+      audio.style.display = 'none';
+      audio.setAttribute('aria-hidden', 'true');
+      shell.appendChild(audio);
 
       const canvas = document.createElement('canvas');
       canvas.className = 'audio-shell-canvas';
@@ -1451,7 +1467,7 @@
       const audioContext = new window.AudioContext();
       const source = audioContext.createMediaElementSource(audio);
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 128;
       source.connect(analyser);
       analyser.connect(audioContext.destination);
       const samples = new Uint8Array(analyser.frequencyBinCount);
@@ -1481,32 +1497,46 @@
         ctx.clearRect(0, 0, width, height);
         const progress = audio.duration ? Math.min(1, audio.currentTime / audio.duration) : 0;
         const playedWidth = width * progress;
-        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        const playedGlow = ctx.createLinearGradient(0, 0, playedWidth || 1, 0);
+        playedGlow.addColorStop(0, 'rgba(255,255,255,0.07)');
+        playedGlow.addColorStop(1, 'rgba(255,255,255,0.01)');
+        ctx.fillStyle = playedGlow;
         ctx.fillRect(0, 0, playedWidth, height);
-        ctx.fillStyle = 'rgba(4, 10, 18, 0.08)';
+        ctx.fillStyle = 'rgba(255,255,255,0.02)';
         ctx.fillRect(playedWidth, 0, width - playedWidth, height);
 
-        const bars = 8;
-      const spanWidth = width * 0.28;
-      const barWidth = spanWidth / bars;
+        const bars = 4;
+        const spanWidth = width * 0.125;
+        const gap = width * 0.01;
+        const barWidth = (spanWidth - gap * (bars - 1)) / bars;
+        const clusterStart = width * 0.055;
         const gradient = ctx.createLinearGradient(0, 0, width, 0);
         gradient.addColorStop(0, 'rgba(255, 184, 92, 0.92)');
         gradient.addColorStop(0.22, 'rgba(255, 232, 94, 0.96)');
         gradient.addColorStop(0.5, 'rgba(141, 255, 101, 0.94)');
         gradient.addColorStop(0.76, 'rgba(93, 214, 255, 0.92)');
         gradient.addColorStop(1, 'rgba(159, 141, 255, 0.9)');
+        const glowGradient = ctx.createLinearGradient(clusterStart, 0, clusterStart + spanWidth, 0);
+        glowGradient.addColorStop(0, 'rgba(255, 176, 66, 0.13)');
+        glowGradient.addColorStop(0.55, 'rgba(108, 224, 255, 0.06)');
+        glowGradient.addColorStop(1, 'rgba(159, 141, 255, 0.03)');
+        ctx.fillStyle = glowGradient;
+        ctx.fillRect(clusterStart - width * 0.018, height * 0.15, spanWidth + width * 0.038, height * 0.68);
+
         ctx.fillStyle = gradient;
-        const floorY = height * 0.94;
-        const maxBarHeight = height * 0.88;
+        const floorY = height * 0.82;
+        const maxBarHeight = height * 0.6;
+        const minBarHeight = height * 0.26;
 
         for (let i = 0; i < bars; i += 1) {
           const sampleIndex = Math.min(samples.length - 1, Math.floor(i * samples.length / bars));
           const sample = samples[sampleIndex] / 255;
-          const barHeight = Math.max(height * 0.12, sample * maxBarHeight);
-        const x = i * barWidth + barWidth * 0.08;
+          const weight = 1 - Math.abs(i - (bars - 1) / 2) * 0.12;
+          const barHeight = Math.max(minBarHeight, sample * maxBarHeight * weight);
+          const x = clusterStart + i * (barWidth + gap);
           const y = floorY - barHeight;
-          const w = Math.max(20, barWidth * 0.58);
-          const radius = Math.min(6, w / 2);
+          const w = Math.max(22, barWidth);
+          const radius = Math.min(10, w / 2);
           ctx.beginPath();
           ctx.moveTo(x + radius, y);
           ctx.arcTo(x + w, y, x + w, floorY, radius);
@@ -1517,10 +1547,11 @@
           ctx.fill();
         }
 
-        ctx.fillStyle = 'rgba(86, 220, 255, 0.38)';
-        ctx.fillRect(0, floorY + 8, width, 2.5);
-        ctx.fillStyle = 'rgba(255,255,255,0.92)';
-        ctx.fillRect(Math.max(0, playedWidth - 1), 0, 2, height);
+        const guideY = height * 0.918;
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.fillRect(width * 0.034, guideY, width * 0.932, Math.max(1, height * 0.003));
+        ctx.fillStyle = 'rgba(255,255,255,0.56)';
+        ctx.fillRect(Math.max(width * 0.034, playedWidth - 0.75), height * 0.14, 1.5, height * 0.72);
         if (meta) {
           meta.firstElementChild.textContent = formatMediaClock(audio.currentTime || 0);
         }
@@ -1976,6 +2007,7 @@
           const audio = document.createElement('audio');
           audio.autoplay = true;
           audio.preload = 'metadata';
+          audio.muted = true;
           fitMediaDialogForAudio();
           attachAudioCompatibility(audio, item, () => showUnsupportedMedia(item, 'audio'));
           audio.src = item.file_url;
@@ -1983,7 +2015,7 @@
           const { shell, canvas, meta } = createAudioShell(item, audio);
           mediaStage.appendChild(shell);
           attachAudioVisualizer(audio, canvas, meta);
-          playMediaElement(audio);
+          playMediaElement(audio, { unmuteAfterStart: true });
         }
       }
 
