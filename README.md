@@ -1,181 +1,42 @@
-# FastFile（Rust 版）
+# FastFile
 
-聊天式文件传输助手，单页前端 + Rust 后端，开箱即用。
+FastFile 是一个聊天式云端传输工具。你可以像发消息一样发送文本、图片、视频、音频和普通文件，所有内容都会保留在同一个会话流里，适合个人传输、团队中转和轻量资料归档。
 
-## 功能
+## 核心能力
 
-- 文本消息（代码不设长度上限）
-- 文件上传（代码不设大小上限）
-- 云端记录（SQLite + 文件系统）
-- 直链下载（删除前有效，删除后立即失效）
-- 图片缩略图预览、视频在线播放、音频卡片入口与媒体查看器内音频播放
-- 管理模式勾选批量删除
-- 管理模式全选 / 反选 / 筛选（全部、仅文件、仅文字）
-- 单密码访问（默认 `REDACTED_PASSWORD`）
-- 全局 no-cache
-- 配置文件热加载（每 3 秒）
-- 网页重启服务按钮（5 秒内二次确认）
-- 上传任务面板（可隐藏后台）
-- 多文件上传、断点续传、取消上传、实时进度与速度估算
-- 移动端页面适配与浅色主题
-- 登录可选“本地记住密码”与顶部“退出登录”按钮
-- 输入框支持粘贴图片上传，旁边“+”菜单可选图片/视频/音频上传
-- 媒体缩略图与音频卡片点击预览，媒体查看器头部统一支持上一条 / 下一条 / 关闭、当前索引 / 总数与键盘上下切换提示
-- 音频查看器支持移动端自适应尺寸，底部控制条与提示会随屏幕一并缩放
-- 发送文本消息和上传文件完成后都会带动画自动滚到底部，滚动动效统一为 1 秒
-- 纯前端媒体预览：浏览器支持的图片 / 视频 / 音频直接播放，不支持的编码会明确提示并保留下载入口
+- 文本消息与文件消息混合展示
+- 图片、视频、音频统一进入媒体查看器预览
+- 媒体查看器支持上一条 / 下一条、当前索引 / 总数、键盘上下切换
+- 音频播放器支持进度记忆、横向进度条、竖向音量调节与移动端适配
+- 文件上传支持多文件、断点续传、取消上传、速度估算与后台任务面板
+- 发送文本和上传完成后都会自动滚到底部
+- 浏览器支持的媒体直接播放，不支持的编码会明确提示并保留下载入口
 
-## 运行（本地）
+## 使用方式
 
-```bash
-cargo run --release
-```
+1. 打开 FastFile 页面并输入访问密码。
+2. 直接发送文本，或通过页面上的上传入口选择文件。
+3. 点击图片缩略图、视频封面或音频卡片进入媒体查看器。
+4. 在媒体查看器里切换上一条 / 下一条，继续浏览同一批媒体。
 
-默认地址：`http://127.0.0.1:21443`
+## 媒体体验
 
-## 配置文件（热加载）
+- 图片、视频、音频使用统一的媒体查看器框架
+- 标题区会优先保证文件类型和当前索引可见，文件名过长时会以 `...` 截断
+- 视频和音频都会记住上次播放位置，重新打开后可继续播放
+- 音频播放器在桌面端与移动端都会按屏幕比例自适应
 
-默认读取：`./fastfile.env`
+## 访问信息
 
-- 每 3 秒自动重读一次
-- 热加载变量：
-  - `FASTFILE_PASSWORD`
-  - `FASTFILE_SESSION_TTL_SECONDS`
-- 启动期变量（建议改完重启）：
-  - `FASTFILE_STORAGE`
-  - `FASTFILE_PORT`
-  - `FASTFILE_ALLOW_WEB_RESTART`
+- 默认地址：`http://127.0.0.1:21443`
+- 当前默认访问密码：`REDACTED_PASSWORD`
 
-你现在要求线上密码是 `REDACTED_PASSWORD`，默认配置已是这个值。
+## 适合谁
 
-## 多架构 Release（GitHub Actions）
+- 需要快速中转文件的人
+- 需要统一查看图片、视频、音频资料的人
+- 想把“聊天发送”和“文件传输”合并到同一页面的人
 
-已内置工作流：`.github/workflows/release.yml`
+## License
 
-触发方式：推送 tag（如 `v1.0.0`）后自动构建并发布附件。
-
-默认产物架构：
-
-- Linux x86_64
-- Linux ARM64
-- macOS ARM64
-- Windows x86_64
-
-## 服务器部署教程（详细）
-
-以下是 Linux 服务器标准部署流程。
-
-### 1) 下载对应架构包
-
-到 GitHub Release 页面下载，例如：
-
-- `fastfile-x86_64-unknown-linux-gnu.tar.gz`
-- `fastfile-aarch64-unknown-linux-gnu.tar.gz`
-
-### 2) 解压到服务目录
-
-```bash
-mkdir -p /opt/fastfile
-tar -xzf fastfile-x86_64-unknown-linux-gnu.tar.gz -C /opt/fastfile
-cd /opt/fastfile/fastfile-x86_64-unknown-linux-gnu
-```
-
-### 3) 配置文件
-
-编辑 `fastfile.env`，至少确认：
-
-```env
-FASTFILE_PASSWORD=REDACTED_PASSWORD
-FASTFILE_STORAGE=/data/fastfile
-FASTFILE_PORT=21443
-FASTFILE_ALLOW_WEB_RESTART=1
-FASTFILE_SESSION_TTL_SECONDS=86400
-```
-
-网页重启按钮安全策略：
-
-- 前端必须 5 秒内二次确认才会发起重启请求。
-- 后端仅在 systemd 托管环境（检测 `INVOCATION_ID`）才允许执行重启。
-- 若非 systemd 环境，会直接拒绝，避免“重启后拉不起来”。
-
-并创建存储目录：
-
-```bash
-mkdir -p /data/fastfile
-```
-
-### 4) 前台试运行
-
-```bash
-./fastfile
-```
-
-浏览器访问 `http://服务器IP:21443`，确认可登录、上传、下载、删除。
-
-### 5) 配置 systemd 常驻
-
-创建 `/etc/systemd/system/fastfile.service`：
-
-```ini
-[Unit]
-Description=FastFile Service
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/fastfile/fastfile-x86_64-unknown-linux-gnu
-ExecStart=/opt/fastfile/fastfile-x86_64-unknown-linux-gnu/fastfile
-Restart=always
-RestartSec=3
-User=root
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启动并开机自启：
-
-```bash
-systemctl daemon-reload
-systemctl enable --now fastfile
-systemctl status fastfile
-```
-
-### 6) 反向代理（可选，推荐）
-
-如果你用 Nginx：
-
-```nginx
-server {
-    listen 80;
-    server_name your.domain.com;
-
-    client_max_body_size 0;
-
-    location / {
-        proxy_pass http://127.0.0.1:21443;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-重载：
-
-```bash
-nginx -t
-systemctl reload nginx
-```
-
-### 7) 升级流程
-
-1. 下载新 release 包并解压到新目录
-2. 保留原 `fastfile.env`
-3. 切换 systemd 的 `WorkingDirectory` 和 `ExecStart`
-4. `systemctl daemon-reload && systemctl restart fastfile`
-
-## 许可证
-
-MIT（见 `LICENSE`）
+MIT

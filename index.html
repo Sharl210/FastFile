@@ -436,6 +436,22 @@
       margin: 0;
       justify-self: center;
       text-align: center;
+      min-width: 0;
+      max-width: min(100%, 640px);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .media-title-name {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .media-title-type,
+    .media-title-index {
+      flex: 0 0 auto;
+      white-space: nowrap;
     }
     .media-stage {
       flex: 0 0 auto;
@@ -476,15 +492,11 @@
       backdrop-filter: blur(12px);
     }
     .media-dialog.audio-mode #mediaViewerTitle {
-      display: block;
       color: #243043;
       font-size: 16px;
       font-weight: 700;
       line-height: 1.2;
-      max-width: min(100%, 420px);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      max-width: min(100%, 520px);
     }
     .media-dialog.audio-mode #mediaViewerHint {
       display: block;
@@ -1148,7 +1160,7 @@
       applyUiState({ chat_height_px: null, input_height_px: null });
     }
 
-    async function fetchVideoProgress(fileId) {
+    async function fetchMediaProgress(fileId) {
       if (mediaProgressCache.has(fileId)) {
         return mediaProgressCache.get(fileId);
       }
@@ -1158,7 +1170,7 @@
       return value;
     }
 
-    async function saveVideoProgress(fileId, positionSeconds) {
+    async function saveMediaProgress(fileId, positionSeconds) {
       if (!token || !fileId) return;
       const safePosition = Math.max(0, Number(positionSeconds || 0));
       mediaProgressCache.set(fileId, safePosition);
@@ -1188,6 +1200,44 @@
       const raw = String(name || '');
       const pos = raw.lastIndexOf('.');
       return pos >= 0 ? raw.slice(pos + 1).toLowerCase() : '';
+    }
+
+    function getFileBaseName(name) {
+      const raw = String(name || '');
+      const pos = raw.lastIndexOf('.');
+      return pos > 0 ? raw.slice(0, pos) : raw;
+    }
+
+    function formatMediaTypeLabel(mimeType, fileName) {
+      const ext = getFileExtension(fileName);
+      if (ext) return ext.toUpperCase();
+      if (!mimeType) return 'FILE';
+      const major = mimeType.split('/')[0] || mimeType;
+      return major.toUpperCase();
+    }
+
+    function truncateMediaTitleName(name) {
+      const raw = String(name || '媒体文件');
+      const budget = window.innerWidth <= 768 ? 10 : 18;
+      if (raw.length <= budget) return raw;
+      return `${raw.slice(0, Math.max(1, budget - 3))}...`;
+    }
+
+    function renderMediaViewerTitle(item, index, total) {
+      const fileName = getFileBaseName(item?.file_name || '媒体文件');
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'media-title-name';
+      nameSpan.textContent = truncateMediaTitleName(fileName);
+
+      const typeSpan = document.createElement('span');
+      typeSpan.className = 'media-title-type';
+      typeSpan.textContent = formatMediaTypeLabel(item?.mime_type, item?.file_name);
+
+      const indexSpan = document.createElement('span');
+      indexSpan.className = 'media-title-index';
+      indexSpan.textContent = `(${index + 1}/${total})`;
+
+      mediaViewerTitle.replaceChildren(nameSpan, typeSpan, indexSpan);
     }
 
     function buildUnsupportedMessage(kind, item) {
@@ -2182,7 +2232,7 @@
             fitMediaDialogToAspect(video.videoWidth || 0, video.videoHeight || 0);
           }, { once: true });
           if (item.file_id) {
-            const savedPosition = await fetchVideoProgress(item.file_id);
+            const savedPosition = await fetchMediaProgress(item.file_id);
             video.addEventListener('loadedmetadata', () => {
               if ((video.videoWidth || 0) > 0 && (video.videoHeight || 0) > 0 && savedPosition > 0 && savedPosition < video.duration) {
                 video.currentTime = savedPosition;
@@ -2193,12 +2243,12 @@
               if ((video.videoWidth || 0) <= 0 || (video.videoHeight || 0) <= 0) return;
               if (videoProgressSaveTimer) clearTimeout(videoProgressSaveTimer);
               videoProgressSaveTimer = setTimeout(() => {
-                saveVideoProgress(item.file_id, video.currentTime).catch(() => {});
+                  saveMediaProgress(item.file_id, video.currentTime).catch(() => {});
               }, 500);
             });
             video.addEventListener('pause', () => {
               if ((video.videoWidth || 0) <= 0 || (video.videoHeight || 0) <= 0) return;
-              saveVideoProgress(item.file_id, video.currentTime).catch(() => {});
+              saveMediaProgress(item.file_id, video.currentTime).catch(() => {});
             });
           }
           attachVideoCompatibility(video, item, false);
@@ -2219,6 +2269,26 @@
           fitMediaDialogForAudio();
           attachAudioCompatibility(audio, item, () => showUnsupportedMedia(item, 'audio'));
           audio.src = item.file_url;
+          if (item.file_id) {
+            const savedPosition = await fetchMediaProgress(item.file_id);
+            audio.addEventListener('loadedmetadata', () => {
+              if (savedPosition > 0 && savedPosition < audio.duration) {
+                audio.currentTime = savedPosition;
+                playMediaElement(audio, { unmuteAfterStart: true });
+              }
+            }, { once: true });
+            audio.addEventListener('timeupdate', () => {
+              if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+              if (videoProgressSaveTimer) clearTimeout(videoProgressSaveTimer);
+              videoProgressSaveTimer = setTimeout(() => {
+                saveMediaProgress(item.file_id, audio.currentTime).catch(() => {});
+              }, 500);
+            });
+            audio.addEventListener('pause', () => {
+              if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+              saveMediaProgress(item.file_id, audio.currentTime).catch(() => {});
+            });
+          }
 
           const { shell, canvas, meta } = createAudioShell(item, audio);
           mediaStage.appendChild(shell);
@@ -2227,7 +2297,7 @@
         }
       }
 
-      mediaViewerTitle.textContent = `${item.file_name || '媒体文件'}（${mediaIndex + 1}/${mediaList.length}）`;
+      renderMediaViewerTitle(item, mediaIndex, mediaList.length);
       mediaPrevBtn.disabled = mediaIndex <= 0;
       mediaNextBtn.disabled = mediaIndex >= mediaList.length - 1;
       mediaViewer.classList.remove('hidden');
