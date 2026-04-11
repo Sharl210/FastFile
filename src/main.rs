@@ -147,12 +147,14 @@ struct UploadCancelResponse {
 struct UiStateUpdateRequest {
     chat_height_px: Option<i64>,
     input_height_px: Option<i64>,
+    text_wrap_enabled: Option<bool>,
 }
 
 #[derive(Serialize)]
 struct UiStateResponse {
     chat_height_px: Option<i64>,
     input_height_px: Option<i64>,
+    text_wrap_enabled: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -463,6 +465,14 @@ fn set_ui_state_value(conn: &Connection, key: &str, value: i64) -> Result<(), Ap
     Ok(())
 }
 
+fn get_ui_state_bool(conn: &Connection, key: &str) -> Result<Option<bool>, AppError> {
+    Ok(get_ui_state_value(conn, key)?.map(|value| value != 0))
+}
+
+fn set_ui_state_bool(conn: &Connection, key: &str, value: bool) -> Result<(), AppError> {
+    set_ui_state_value(conn, key, if value { 1 } else { 0 })
+}
+
 fn delete_ui_state_key(conn: &Connection, key: &str) -> Result<(), AppError> {
     conn.execute("DELETE FROM ui_state WHERE key = ?1", params![key])
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("重置界面状态失败: {e}")))?;
@@ -575,6 +585,7 @@ async fn get_ui_state(
     Ok(Json(UiStateResponse {
         chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
         input_height_px: get_ui_state_value(&conn, "input_height_px")?,
+        text_wrap_enabled: get_ui_state_bool(&conn, "text_wrap_enabled")?,
     }))
 }
 
@@ -598,10 +609,14 @@ async fn update_ui_state(
         }
         set_ui_state_value(&conn, "input_height_px", height)?;
     }
+    if let Some(enabled) = payload.text_wrap_enabled {
+        set_ui_state_bool(&conn, "text_wrap_enabled", enabled)?;
+    }
 
     Ok(Json(UiStateResponse {
         chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
         input_height_px: get_ui_state_value(&conn, "input_height_px")?,
+        text_wrap_enabled: get_ui_state_bool(&conn, "text_wrap_enabled")?,
     }))
 }
 
@@ -613,9 +628,11 @@ async fn reset_ui_state(
     let conn = open_conn(&state.db_path)?;
     delete_ui_state_key(&conn, "chat_height_px")?;
     delete_ui_state_key(&conn, "input_height_px")?;
+    delete_ui_state_key(&conn, "text_wrap_enabled")?;
     Ok(Json(UiStateResponse {
         chat_height_px: None,
         input_height_px: None,
+        text_wrap_enabled: None,
     }))
 }
 

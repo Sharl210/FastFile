@@ -167,6 +167,18 @@
       background: #fff6e8;
       border-color: #f0d3a2;
     }
+    .bubble-file-image {
+      background: #f6edff;
+      border-color: #dcc6ff;
+    }
+    .bubble-file-video {
+      background: #eaf5ff;
+      border-color: #c4dfff;
+    }
+    .bubble-file-audio {
+      background: #fff0f8;
+      border-color: #f3c9e2;
+    }
     .item.is-media-active .bubble {
       border-color: #7ba7ff;
       box-shadow: 0 0 0 3px rgba(29, 114, 255, .14);
@@ -188,6 +200,16 @@
     }
     .bubble-copy-btn {
       padding: 4px 8px;
+      font-size: 12px;
+      min-height: auto;
+      box-shadow: none;
+    }
+    .bubble-text-body {
+      line-height: 1.5;
+    }
+    .bubble-open-viewer-btn {
+      margin-top: 8px;
+      padding: 5px 10px;
       font-size: 12px;
       min-height: auto;
       box-shadow: none;
@@ -407,9 +429,14 @@
     }
     .media-dialog {
       --media-surface-radius: 26px;
+      --media-dialog-bg: #ffffff;
+      --media-head-bg: transparent;
+      --media-stage-bg: transparent;
+      --media-type-bg: #e7eefb;
+      --media-type-color: #31435f;
       width: min(980px, 100%);
       max-height: 90vh;
-      background: #fff;
+      background: var(--media-dialog-bg);
       border-radius: var(--media-surface-radius);
       border: 1px solid #d4e1f2;
       position: relative;
@@ -425,6 +452,7 @@
       grid-template-columns: auto minmax(0, 1fr) auto;
       align-items: center;
       gap: 8px;
+      background: var(--media-head-bg);
     }
     .media-head-nav {
       display: flex;
@@ -453,6 +481,22 @@
       flex: 0 0 auto;
       white-space: nowrap;
     }
+    .media-title-type {
+      display: inline-flex;
+      align-items: center;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--media-type-bg);
+      color: var(--media-type-color);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+    .media-title-index {
+      color: #52627a;
+      font-size: 13px;
+    }
     .media-stage {
       flex: 0 0 auto;
       min-height: 280px;
@@ -462,14 +506,33 @@
       justify-content: center;
       margin: 0 12px 12px;
       border-radius: var(--media-surface-radius);
-      background: transparent;
+      background: var(--media-stage-bg);
       overflow: hidden;
+    }
+    .media-dialog.image-mode {
+      --media-dialog-bg: #f6edff;
+      --media-type-bg: #eadcff;
+      --media-type-color: #6a44a6;
+    }
+    .media-dialog.video-mode {
+      --media-dialog-bg: #eaf5ff;
+      --media-type-bg: #d9ecff;
+      --media-type-color: #1f5f96;
+    }
+    .media-dialog.text-mode {
+      --media-dialog-bg: #f8fafc;
+      --media-stage-bg: linear-gradient(180deg, #fbfdff 0%, #f3f7fb 100%);
+      --media-type-bg: #e5ecf5;
+      --media-type-color: #41546e;
     }
     .media-stage.placeholder-surface {
       background: linear-gradient(180deg, #f8fbff 0%, #eef4fd 100%);
     }
     .media-dialog.audio-mode {
-      background: linear-gradient(180deg, #ffffff 0%, #f8f2ff 42%, #eef6ff 100%);
+      --media-dialog-bg: #fff0f8;
+      --media-type-bg: #ffd9f1;
+      --media-type-color: #a33573;
+      background: var(--media-dialog-bg);
       border: 0;
       box-shadow: none;
     }
@@ -515,7 +578,7 @@
     .media-dialog.audio-mode .media-stage {
       margin: 0;
       border-radius: 0 0 var(--media-surface-radius) var(--media-surface-radius);
-      background: linear-gradient(180deg, #fbf8ff 0%, #f4efff 38%, #ecf5ff 100%);
+      background: transparent;
     }
     .media-stage img,
     .media-stage video {
@@ -527,6 +590,30 @@
       background: transparent;
       display: block;
       border-radius: inherit;
+    }
+    .text-viewer-stage {
+      --text-viewer-font-size: 14px;
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      padding: 0;
+      box-sizing: border-box;
+      font-size: var(--text-viewer-font-size);
+      line-height: 1.65;
+      color: #243043;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overscroll-behavior: contain;
+    }
+    .text-viewer-stage.wrap-disabled {
+      white-space: pre;
+      word-break: normal;
+    }
+    .text-viewer-block {
+      padding: 0 20px;
+      box-sizing: border-box;
+      white-space: inherit;
+      word-break: inherit;
     }
     .audio-card {
       width: 260px;
@@ -852,6 +939,7 @@
         <div class="media-head-nav">
           <button id="mediaPrevBtn">上一条</button>
           <button id="mediaNextBtn">下一条</button>
+          <button id="mediaCopyBtn" class="hidden">复制</button>
         </div>
         <strong id="mediaViewerTitle">媒体预览</strong>
         <button id="mediaCloseBtn">关闭</button>
@@ -972,7 +1060,9 @@
     const mediaViewerTitle = document.getElementById('mediaViewerTitle');
     const mediaPrevBtn = document.getElementById('mediaPrevBtn');
     const mediaNextBtn = document.getElementById('mediaNextBtn');
+    const mediaCopyBtn = document.getElementById('mediaCopyBtn');
     const mediaCloseBtn = document.getElementById('mediaCloseBtn');
+    const mediaViewerHint = document.getElementById('mediaViewerHint');
     const scrollFabGroup = document.getElementById('scrollFabGroup');
     const scrollTopBtn = document.getElementById('scrollTopBtn');
     const scrollBottomBtn = document.getElementById('scrollBottomBtn');
@@ -1010,13 +1100,21 @@
     const audioVisualPending = new Map();
     let activeAudioVisualizerCleanup = null;
     let activeAudioShellCleanup = null;
+    let activeTextViewerState = null;
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
+    let textWrapEnabled = true;
+    let textViewerZoom = 1;
 
     const SCROLL_EDGE_THRESHOLD = 24;
     const SMOOTH_SCROLL_DURATION = 1000;
     const MEDIA_VIEWPORT_MAX_RATIO = 0.9;
+    const TEXT_PREVIEW_MAX_LINES = 5;
+    const TEXT_PREVIEW_MAX_CHARS = 200;
+    const TEXT_VIEWER_WRAP_BLOCK_CHARS = 1600;
+    const TEXT_VIEWER_NOWRAP_BLOCK_LINES = 40;
+    const TEXT_VIEWER_OVERSCAN = 2;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -1068,6 +1166,10 @@
       if (msg.kind === 'text') {
         return isSelfMessage(msg.id) ? 'bubble-self-text' : 'bubble-text';
       }
+      const mimeType = msg.mime_type || '';
+      if (mimeType.startsWith('image/')) return 'bubble-file-image';
+      if (mimeType.startsWith('video/')) return 'bubble-file-video';
+      if (mimeType.startsWith('audio/')) return 'bubble-file-audio';
       return 'bubble-file';
     }
 
@@ -1121,10 +1223,12 @@
       scrollBottomBtn.disabled = isChatNearBottom();
     }
 
-    function applyUiState({ chat_height_px, input_height_px }) {
+    function applyUiState({ chat_height_px, input_height_px, text_wrap_enabled }) {
       suppressUiResizeSave = true;
       chat.style.height = chat_height_px ? `${chat_height_px}px` : DEFAULT_CHAT_HEIGHT;
       textInput.style.height = input_height_px ? `${input_height_px}px` : DEFAULT_INPUT_HEIGHT;
+      textWrapEnabled = text_wrap_enabled !== false;
+      syncTextViewerWrapUi();
       updateScrollButtonState();
       setTimeout(() => {
         suppressUiResizeSave = false;
@@ -1157,7 +1261,7 @@
 
     async function restoreDefaultUiState() {
       await api('/api/ui-state/reset', { method: 'POST' });
-      applyUiState({ chat_height_px: null, input_height_px: null });
+      applyUiState({ chat_height_px: null, input_height_px: null, text_wrap_enabled: true });
     }
 
     async function fetchMediaProgress(fileId) {
@@ -1208,6 +1312,36 @@
       return pos > 0 ? raw.slice(0, pos) : raw;
     }
 
+    function getTextPreview(text) {
+      const raw = String(text || '');
+      let lineBoundary = raw.length;
+      let lineCount = 1;
+      for (let i = 0; i < raw.length; i += 1) {
+        if (raw[i] !== '\n') continue;
+        if (lineCount >= TEXT_PREVIEW_MAX_LINES) {
+          lineBoundary = i;
+          break;
+        }
+        lineCount += 1;
+      }
+      const limit = Math.min(raw.length, TEXT_PREVIEW_MAX_CHARS, lineBoundary);
+      return {
+        preview: raw.slice(0, limit).replace(/\s+$/u, ''),
+        truncated: limit < raw.length,
+      };
+    }
+
+    function isLongTextMessage(msg) {
+      return msg?.kind === 'text' && getTextPreview(msg.text).truncated;
+    }
+
+    function getViewerMessageTitle(item) {
+      if (item?.kind === 'text') {
+        return String(item.text || '').split('\n').find((line) => line.trim()) || '文本消息';
+      }
+      return getFileBaseName(item?.file_name || '媒体文件');
+    }
+
     function formatMediaTypeLabel(mimeType, fileName) {
       const ext = getFileExtension(fileName);
       if (ext) return ext.toUpperCase();
@@ -1224,14 +1358,17 @@
     }
 
     function renderMediaViewerTitle(item, index, total) {
-      const fileName = getFileBaseName(item?.file_name || '媒体文件');
+      const fileName = getViewerMessageTitle(item);
       const nameSpan = document.createElement('span');
       nameSpan.className = 'media-title-name';
       nameSpan.textContent = truncateMediaTitleName(fileName);
 
       const typeSpan = document.createElement('span');
       typeSpan.className = 'media-title-type';
-      typeSpan.textContent = formatMediaTypeLabel(item?.mime_type, item?.file_name);
+      const typeLabel = item?.kind === 'text'
+        ? 'TEXT'
+        : formatMediaTypeLabel(item?.mime_type, item?.file_name);
+      typeSpan.textContent = `[${typeLabel}]`;
 
       const indexSpan = document.createElement('span');
       indexSpan.className = 'media-title-index';
@@ -1632,11 +1769,18 @@
     }
 
     function resetMediaDialogLayout() {
+      cleanupActiveTextViewer();
       mediaDialog.style.width = '';
       mediaStage.style.width = '';
       mediaStage.style.height = '';
       mediaStage.classList.remove('placeholder-surface');
+      mediaDialog.classList.remove('image-mode');
+      mediaDialog.classList.remove('text-mode');
+      mediaDialog.classList.remove('video-mode');
       mediaDialog.classList.remove('audio-mode');
+      mediaCopyBtn.classList.add('hidden');
+      mediaCopyBtn.textContent = '复制';
+      renderMediaViewerHint(null);
     }
 
     function fitMediaDialogToAspect(width, height) {
@@ -1674,6 +1818,268 @@
       mediaStage.style.width = `${stageWidth}px`;
       mediaStage.style.height = `${stageHeight}px`;
       mediaDialog.style.width = `${Math.max(isMobile ? 260 : 420, Math.min(maxDialogWidth, stageWidth + dialogPadding))}px`;
+    }
+
+    function fitMediaDialogForText() {
+      const isMobile = window.innerWidth <= 768;
+      const viewportWidth = Math.min(window.innerWidth * (isMobile ? 0.96 : 0.9), 980);
+      const viewportHeight = Math.max(320, Math.min(window.innerHeight * 0.78, 760));
+      mediaStage.style.width = `${Math.round(viewportWidth - (isMobile ? 20 : 32))}px`;
+      mediaStage.style.height = `${Math.round(viewportHeight - (isMobile ? 96 : 112))}px`;
+      mediaDialog.style.width = `${Math.round(viewportWidth)}px`;
+    }
+
+    function cleanupActiveTextViewer() {
+      if (!activeTextViewerState) return;
+      const { stage, scrollHandler, resizeObserver, zoomCleanup } = activeTextViewerState;
+      if (stage && scrollHandler) {
+        stage.removeEventListener('scroll', scrollHandler);
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      if (typeof zoomCleanup === 'function') {
+        zoomCleanup();
+      }
+      activeTextViewerState = null;
+    }
+
+    function splitTextViewerBlocks(text, wrapEnabled) {
+      const raw = String(text || '');
+      if (!raw) return [''];
+      if (wrapEnabled) {
+        const blocks = [];
+        for (let i = 0; i < raw.length; i += TEXT_VIEWER_WRAP_BLOCK_CHARS) {
+          blocks.push(raw.slice(i, i + TEXT_VIEWER_WRAP_BLOCK_CHARS));
+        }
+        return blocks;
+      }
+
+      const lines = raw.split('\n');
+      const blocks = [];
+      for (let i = 0; i < lines.length; i += TEXT_VIEWER_NOWRAP_BLOCK_LINES) {
+        blocks.push(lines.slice(i, i + TEXT_VIEWER_NOWRAP_BLOCK_LINES).join('\n'));
+      }
+      return blocks;
+    }
+
+    function estimateTextViewerBlockHeight(blockText, wrapEnabled, stageWidth) {
+      const fontSize = 14 * textViewerZoom;
+      const lineHeight = fontSize * 1.65;
+      if (!wrapEnabled) {
+        return Math.round(Math.max(1, String(blockText || '').split('\n').length) * lineHeight);
+      }
+
+      const usableWidth = Math.max(220, stageWidth - 40);
+      const charsPerLine = Math.max(12, Math.floor(usableWidth / Math.max(7, fontSize * 0.58)));
+      const logicalLines = String(blockText || '').split('\n').reduce((sum, line) => {
+        return sum + Math.max(1, Math.ceil(Math.max(line.length, 1) / charsPerLine));
+      }, 0);
+      return Math.round(logicalLines * lineHeight);
+    }
+
+    function renderTextViewerViewport(state) {
+      const { stage, blocks, heights, topSpacer, host, bottomSpacer } = state;
+      const overscanPx = stage.clientHeight * TEXT_VIEWER_OVERSCAN;
+      const startBoundary = Math.max(0, stage.scrollTop - overscanPx);
+      const endBoundary = stage.scrollTop + stage.clientHeight + overscanPx;
+
+      let start = 0;
+      let topHeight = 0;
+      while (start < heights.length && topHeight + heights[start] < startBoundary) {
+        topHeight += heights[start];
+        start += 1;
+      }
+
+      let end = start;
+      let renderedBottom = topHeight;
+      while (end < heights.length && renderedBottom < endBoundary) {
+        renderedBottom += heights[end];
+        end += 1;
+      }
+      if (end === start && end < heights.length) {
+        renderedBottom += heights[end];
+        end += 1;
+      }
+
+      topSpacer.style.height = `${18 + topHeight}px`;
+
+      const fragment = document.createDocumentFragment();
+      for (let i = start; i < end; i += 1) {
+        const block = document.createElement('div');
+        block.className = 'text-viewer-block';
+        block.textContent = blocks[i];
+        fragment.appendChild(block);
+      }
+      host.replaceChildren(fragment);
+
+      let measuredChanged = false;
+      Array.from(host.children).forEach((node, offset) => {
+        const index = start + offset;
+        const measuredHeight = Math.ceil(node.getBoundingClientRect().height);
+        if (measuredHeight > 0 && Math.abs(measuredHeight - heights[index]) > 1) {
+          heights[index] = measuredHeight;
+          measuredChanged = true;
+        }
+      });
+
+      const totalHeight = heights.reduce((sum, height) => sum + height, 0);
+      const renderedHeight = heights.slice(start, end).reduce((sum, height) => sum + height, 0);
+      bottomSpacer.style.height = `${18 + Math.max(0, totalHeight - topHeight - renderedHeight)}px`;
+      state.start = start;
+      state.end = end;
+
+      if (measuredChanged) {
+        requestAnimationFrame(() => renderTextViewerViewport(state));
+      }
+    }
+
+    function mountTextViewerState(stage, item, preservedScrollTop = 0) {
+      const blocks = splitTextViewerBlocks(item.text || '', textWrapEnabled);
+      const stageWidth = stage.clientWidth || parseInt(mediaStage.style.width || '0', 10) || 640;
+      const heights = blocks.map((blockText) => estimateTextViewerBlockHeight(blockText, textWrapEnabled, stageWidth));
+
+      stage.innerHTML = '';
+      stage.classList.toggle('wrap-disabled', !textWrapEnabled);
+      stage.style.setProperty('--text-viewer-font-size', `${14 * textViewerZoom}px`);
+
+      const topSpacer = document.createElement('div');
+      const host = document.createElement('div');
+      const bottomSpacer = document.createElement('div');
+      stage.appendChild(topSpacer);
+      stage.appendChild(host);
+      stage.appendChild(bottomSpacer);
+
+      const state = {
+        stage,
+        item,
+        blocks,
+        heights,
+        topSpacer,
+        host,
+        bottomSpacer,
+        start: 0,
+        end: 0,
+        scrollHandler: null,
+        resizeObserver: null,
+        zoomCleanup: null,
+      };
+
+      state.scrollHandler = () => renderTextViewerViewport(state);
+      stage.addEventListener('scroll', state.scrollHandler, { passive: true });
+      state.resizeObserver = new ResizeObserver(() => renderTextViewerViewport(state));
+      state.resizeObserver.observe(stage);
+      state.zoomCleanup = attachTextViewerZoom(stage);
+      activeTextViewerState = state;
+      stage.scrollTop = Math.max(0, preservedScrollTop);
+      renderTextViewerViewport(state);
+    }
+
+    function syncTextViewerWrapUi() {
+      const textStage = mediaStage.querySelector('.text-viewer-stage');
+      if (textStage) {
+        textStage.classList.toggle('wrap-disabled', !textWrapEnabled);
+        textStage.style.setProperty('--text-viewer-font-size', `${14 * textViewerZoom}px`);
+      }
+
+      const toggle = document.getElementById('textWrapToggle');
+      if (toggle) {
+        toggle.checked = textWrapEnabled;
+      }
+
+      if (activeTextViewerState && textStage) {
+        const keepScrollTop = textStage.scrollTop;
+        cleanupActiveTextViewer();
+        mountTextViewerState(textStage, activeTextViewerState?.item || mediaList[mediaIndex], keepScrollTop);
+      }
+    }
+
+    function renderMediaViewerHint(item) {
+      mediaViewerHint.innerHTML = '';
+      if (item?.kind !== 'text') {
+        mediaViewerHint.textContent = '提示：键盘 ↑/↓ 可切换上一条/下一条';
+        return;
+      }
+
+      const row = document.createElement('div');
+      row.style.display = 'inline-flex';
+      row.style.alignItems = 'center';
+      row.style.justifyContent = 'center';
+      row.style.gap = '10px';
+      row.style.flexWrap = 'wrap';
+
+      const wrapLabel = document.createElement('label');
+      wrapLabel.style.display = 'inline-flex';
+      wrapLabel.style.alignItems = 'center';
+      wrapLabel.style.gap = '8px';
+      wrapLabel.style.lineHeight = '1';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = 'textWrapToggle';
+      checkbox.checked = textWrapEnabled;
+      checkbox.addEventListener('change', () => {
+        textWrapEnabled = checkbox.checked;
+        syncTextViewerWrapUi();
+        saveUiState({ text_wrap_enabled: textWrapEnabled }).catch(() => {});
+      });
+
+      const labelText = document.createElement('span');
+      labelText.textContent = '自动换行';
+      wrapLabel.appendChild(checkbox);
+      wrapLabel.appendChild(labelText);
+
+      const note = document.createElement('span');
+      note.textContent = '提示：键盘 ↑/↓ 可切换上一条/下一条，复制按钮可复制全文';
+      note.style.lineHeight = '1.35';
+      row.appendChild(wrapLabel);
+      row.appendChild(note);
+      mediaViewerHint.appendChild(row);
+    }
+
+    function setTextViewerZoom(nextZoom) {
+      textViewerZoom = Math.max(0.5, nextZoom);
+      syncTextViewerWrapUi();
+    }
+
+    function attachTextViewerZoom(stage) {
+      let pinchDistance = 0;
+      let pinchStartZoom = textViewerZoom;
+      const wheelHandler = (event) => {
+        if (!event.ctrlKey) return;
+        event.preventDefault();
+        const factor = Math.exp(-event.deltaY * 0.0015);
+        setTextViewerZoom(textViewerZoom * factor);
+      };
+      const touchStartHandler = (event) => {
+        if (event.touches.length !== 2) return;
+        const [a, b] = event.touches;
+        pinchDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        pinchStartZoom = textViewerZoom;
+      };
+      const touchMoveHandler = (event) => {
+        if (event.touches.length !== 2 || !pinchDistance) return;
+        event.preventDefault();
+        const [a, b] = event.touches;
+        const nextDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        if (!nextDistance) return;
+        setTextViewerZoom(pinchStartZoom * (nextDistance / pinchDistance));
+      };
+      const touchEndHandler = () => {
+        pinchDistance = 0;
+      };
+
+      stage.addEventListener('wheel', wheelHandler, { passive: false });
+      stage.addEventListener('touchstart', touchStartHandler, { passive: false });
+      stage.addEventListener('touchmove', touchMoveHandler, { passive: false });
+      stage.addEventListener('touchend', touchEndHandler, { passive: true });
+
+      return () => {
+        stage.removeEventListener('wheel', wheelHandler);
+        stage.removeEventListener('touchstart', touchStartHandler);
+        stage.removeEventListener('touchmove', touchMoveHandler);
+        stage.removeEventListener('touchend', touchEndHandler);
+      };
     }
 
     function attachAudioVisualizer(audio, canvas, meta) {
@@ -1994,6 +2400,7 @@
 
       if (msg.kind === 'text') {
         const textValue = msg.text || '';
+        const textPreview = getTextPreview(textValue);
         const head = document.createElement('div');
         head.className = 'bubble-head';
 
@@ -2022,8 +2429,17 @@
         bubble.appendChild(head);
 
         const textBody = document.createElement('div');
-        textBody.textContent = textValue;
+        textBody.className = 'bubble-text-body';
+        textBody.textContent = textPreview.truncated ? `${textPreview.preview}...` : textValue;
         bubble.appendChild(textBody);
+
+        if (textPreview.truncated) {
+          const viewerBtn = document.createElement('button');
+          viewerBtn.className = 'bubble-open-viewer-btn';
+          viewerBtn.textContent = '查看更多';
+          viewerBtn.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+          bubble.appendChild(viewerBtn);
+        }
       } else {
         const head = document.createElement('div');
         head.className = 'bubble-head';
@@ -2165,6 +2581,7 @@
 
     function buildMediaList() {
       mediaList = allMessages.filter((m) => {
+        if (m.kind === 'text') return isLongTextMessage(m);
         if (m.kind !== 'file') return false;
         const mt = m.mime_type || '';
         return mt.startsWith('image/') || mt.startsWith('video/') || mt.startsWith('audio/');
@@ -2203,8 +2620,18 @@
       const item = mediaList[mediaIndex];
       const mt = item.mime_type || '';
       mediaStage.innerHTML = '';
+      mediaCopyBtn.classList.toggle('hidden', item.kind !== 'text');
+      renderMediaViewerHint(item);
 
-      if (mt.startsWith('image/')) {
+      if (item.kind === 'text') {
+        mediaDialog.classList.add('text-mode');
+        fitMediaDialogForText();
+        const textStage = document.createElement('div');
+        textStage.className = 'text-viewer-stage';
+        mediaStage.appendChild(textStage);
+        mountTextViewerState(textStage, item);
+      } else if (mt.startsWith('image/')) {
+        mediaDialog.classList.add('image-mode');
         const cached = getMediaCompatibility(item);
         if (cached?.kind === 'image' && cached.supported === false) {
           showUnsupportedMedia(item, 'image');
@@ -2219,6 +2646,7 @@
           mediaStage.appendChild(img);
         }
       } else if (mt.startsWith('video/')) {
+        mediaDialog.classList.add('video-mode');
         const cached = getMediaCompatibility(item);
         if (cached?.kind === 'video' && cached.supported === false) {
           showUnsupportedMedia(item, 'video');
@@ -2566,7 +2994,7 @@
       const item = mediaList[mediaIndex];
       const activeVideo = mediaStage.querySelector('video');
       if (!item || !activeVideo || !(item.mime_type || '').startsWith('video/')) return;
-      await saveVideoProgress(item.file_id, activeVideo.currentTime || 0);
+      await saveMediaProgress(item.file_id, activeVideo.currentTime || 0);
     }
 
     function buildChunkPlan(task, chunkSize, completedParts) {
@@ -3022,6 +3450,19 @@
 
     mediaPrevBtn.onclick = () => switchMedia(-1).catch(() => {});
     mediaNextBtn.onclick = () => switchMedia(1).catch(() => {});
+    mediaCopyBtn.onclick = async () => {
+      const item = mediaList[mediaIndex];
+      if (!item || item.kind !== 'text') return;
+      try {
+        await copyRawText(item.text || '');
+        mediaCopyBtn.textContent = '已复制';
+        setTimeout(() => {
+          mediaCopyBtn.textContent = '复制';
+        }, 1200);
+      } catch (err) {
+        alert(err.message || '复制失败');
+      }
+    };
     mediaCloseBtn.onclick = () => closeMediaViewer().catch(() => {});
 
     document.addEventListener('click', (e) => {
