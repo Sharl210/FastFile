@@ -610,6 +610,12 @@
       white-space: pre;
       word-break: normal;
     }
+    .text-viewer-stage.is-pinching {
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
     .text-viewer-block {
       padding: 0 20px;
       box-sizing: border-box;
@@ -2142,6 +2148,21 @@
     function attachTextViewerZoom(stage) {
       let pinchDistance = 0;
       let pinchStartZoom = textViewerZoom;
+      const beginPinch = (touches) => {
+        if (!touches || touches.length < 2) return false;
+        const [a, b] = touches;
+        pinchDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        if (!pinchDistance) return false;
+        pinchStartZoom = textViewerZoom;
+        stage.classList.add('is-pinching');
+        return true;
+      };
+
+      const endPinch = () => {
+        pinchDistance = 0;
+        stage.classList.remove('is-pinching');
+      };
+
       const wheelHandler = (event) => {
         if (!event.ctrlKey) return;
         event.preventDefault();
@@ -2149,43 +2170,62 @@
         setTextViewerZoom(textViewerZoom * factor);
       };
       const touchStartHandler = (event) => {
-        if (event.touches.length !== 2) return;
+        if (event.touches.length < 2) return;
+        if (!beginPinch(event.touches)) return;
         event.preventDefault();
-        const [a, b] = event.touches;
-        pinchDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-        pinchStartZoom = textViewerZoom;
+        event.stopPropagation();
       };
       const touchMoveHandler = (event) => {
-        if (event.touches.length !== 2 || !pinchDistance) return;
+        if (event.touches.length < 2 || !pinchDistance) return;
         event.preventDefault();
+        event.stopPropagation();
         const [a, b] = event.touches;
         const nextDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         if (!nextDistance) return;
         setTextViewerZoom(pinchStartZoom * (nextDistance / pinchDistance));
       };
-      const touchEndHandler = () => {
-        pinchDistance = 0;
+      const touchEndHandler = (event) => {
+        if (event.touches.length >= 2) {
+          beginPinch(event.touches);
+          return;
+        }
+        endPinch();
       };
       const gestureBlockHandler = (event) => {
         event.preventDefault();
+        event.stopPropagation();
+        pinchStartZoom = textViewerZoom;
+        stage.classList.add('is-pinching');
       };
+      const gestureScaleHandler = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.scale === 'number' && Number.isFinite(event.scale) && event.scale > 0) {
+          stage.classList.add('is-pinching');
+          setTextViewerZoom(pinchStartZoom * event.scale);
+        }
+      };
+
+      window.addEventListener('touchmove', touchMoveHandler, { passive: false, capture: true });
+      window.addEventListener('touchend', touchEndHandler, { passive: false, capture: true });
+      window.addEventListener('touchcancel', endPinch, { passive: true, capture: true });
 
       stage.addEventListener('wheel', wheelHandler, { passive: false });
       stage.addEventListener('touchstart', touchStartHandler, { passive: false });
-      stage.addEventListener('touchmove', touchMoveHandler, { passive: false });
-      stage.addEventListener('touchend', touchEndHandler, { passive: true });
       stage.addEventListener('gesturestart', gestureBlockHandler, { passive: false });
-      stage.addEventListener('gesturechange', gestureBlockHandler, { passive: false });
-      stage.addEventListener('gestureend', gestureBlockHandler, { passive: false });
+      stage.addEventListener('gesturechange', gestureScaleHandler, { passive: false });
+      stage.addEventListener('gestureend', endPinch, { passive: false });
 
       return () => {
+        window.removeEventListener('touchmove', touchMoveHandler, { capture: true });
+        window.removeEventListener('touchend', touchEndHandler, { capture: true });
+        window.removeEventListener('touchcancel', endPinch, { capture: true });
         stage.removeEventListener('wheel', wheelHandler);
         stage.removeEventListener('touchstart', touchStartHandler);
-        stage.removeEventListener('touchmove', touchMoveHandler);
-        stage.removeEventListener('touchend', touchEndHandler);
         stage.removeEventListener('gesturestart', gestureBlockHandler);
-        stage.removeEventListener('gesturechange', gestureBlockHandler);
-        stage.removeEventListener('gestureend', gestureBlockHandler);
+        stage.removeEventListener('gesturechange', gestureScaleHandler);
+        stage.removeEventListener('gestureend', endPinch);
+        endPinch();
       };
     }
 
