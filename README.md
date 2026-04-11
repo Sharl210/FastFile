@@ -63,6 +63,77 @@ FastFile 是一个面向个人与小团队的轻量传输系统。系统将文�
 - 地址：`http://127.0.0.1:21443`
 - 默认密码：`REDACTED_PASSWORD`
 
+## 面向 AI 的安装与部署提示词
+
+```text
+仓库地址： https://github.com/Sharl210/FastFile
+
+你现在要安装并部署 FastFile。
+
+请按下面顺序执行：
+
+1. 克隆仓库
+   git clone https://github.com/Sharl210/FastFile.git
+   cd FastFile
+
+2. 安装 Rust 工具链
+   确认 cargo 和 rustc 可用；如果没有，就先安装稳定版 Rust。
+
+3. 构建发布版
+   cargo build --release
+
+4. 准备配置文件
+   使用仓库里的 fastfile.env 作为基础配置。
+   至少确认这些配置：
+   - FASTFILE_PASSWORD
+   - FASTFILE_STORAGE
+   - FASTFILE_PORT
+   - FASTFILE_ALLOW_WEB_RESTART
+   - FASTFILE_SESSION_TTL_SECONDS
+
+5. 准备运行目录
+   确保 FASTFILE_STORAGE 指向可持久化目录，并且运行用户对该目录有读写权限。
+
+6. 启动服务
+   生产环境优先使用 systemd 托管 target/release/fastfile。
+   工作目录指向仓库目录，保证 fastfile.env 可以被默认读取。
+
+7. 验证服务
+   打开 /api/healthz，确认返回 {"ok":true}。
+   再访问首页，验证登录、消息列表、上传和查看器是否正常。
+
+8. 如果需要升级部署
+   先拉取新版本代码，再重新 cargo build --release，然后重启 systemd 服务。
+```
+
+## 部署说明
+
+### 本地运行
+
+```bash
+cargo run
+```
+
+### 生产构建
+
+```bash
+cargo build --release
+```
+
+发布产物默认位于：
+
+```bash
+target/release/fastfile
+```
+
+### 建议的生产部署方式
+
+1. 将仓库放到固定目录，例如 `/opt/FastFile`
+2. 在该目录内维护 `fastfile.env`
+3. 将 `FASTFILE_STORAGE` 指向独立持久化目录，例如 `/data/fastfile`
+4. 使用 systemd 托管 `target/release/fastfile`
+5. 发布后通过 `/api/healthz` 和首页进行回归验证
+
 ## 适用场景
 
 - 个人设备之间的临时传输
