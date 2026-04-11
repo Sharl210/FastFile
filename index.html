@@ -406,7 +406,7 @@
       width: min(980px, 100%);
       max-height: 90vh;
       background: #fff;
-      border-radius: 14px;
+      border-radius: var(--media-surface-radius);
       border: 1px solid #d4e1f2;
       position: relative;
       display: flex;
@@ -440,8 +440,8 @@
     }
     .media-dialog.audio-mode {
       background: linear-gradient(180deg, #ffffff 0%, #f8f2ff 42%, #eef6ff 100%);
-      border: 1px solid #dbe6f7;
-      box-shadow: 0 18px 48px rgba(20, 31, 56, 0.18);
+      border: 0;
+      box-shadow: none;
     }
     .media-dialog.audio-mode .media-head {
       position: relative;
