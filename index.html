@@ -201,6 +201,7 @@
       min-height: 420px;
       max-height: 82vh;
       overflow: auto;
+      overflow-anchor: none;
       padding: 10px;
       background: #f9fbff;
       border: 1px solid #e4ebf5;
@@ -476,6 +477,12 @@
       justify-content: center;
       padding: 0;
       box-sizing: border-box;
+    }
+    .editor-launch-btn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      flex: none;
     }
     .composer-actions {
       display: flex;
@@ -853,6 +860,7 @@
       width: 100%;
       height: 100%;
       overflow: auto;
+      overflow-anchor: none;
       padding: 0;
       box-sizing: border-box;
       font-size: var(--text-viewer-font-size);
@@ -1291,7 +1299,12 @@
           <input id="fileUploadInput" type="file" multiple class="hidden" />
         </div>
         <button id="sendTextBtn" class="primary">发送文本</button>
-        <button id="openEditorBtn" class="editor-launch-btn" title="全屏编辑">⤢</button>
+        <button id="openEditorBtn" class="editor-launch-btn" title="全屏编辑" aria-label="全屏编辑">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M9 9 3 3M15 9l6-6M15 15l6 6M9 15l-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
       </div>
       <div class="footer-note" id="composerHint" style="margin-top:8px;">支持把文件拖到输入框上传，也支持直接粘贴任意文件或图片自动上传。</div>
     </div>
@@ -1418,6 +1431,7 @@
     let textViewerZoomSaveTimer = 0;
     let textWrapEnabled = true;
     let textViewerZoom = 1;
+    let virtualRetentionClock = 0;
 
     const SCROLL_EDGE_THRESHOLD = 24;
     const SMOOTH_SCROLL_DURATION = 1000;
@@ -1426,10 +1440,14 @@
     const TEXT_PREVIEW_MAX_CHARS = 200;
     const TEXT_VIEWER_WRAP_BLOCK_LINES = 28;
     const TEXT_VIEWER_NOWRAP_BLOCK_LINES = 40;
-    const TEXT_VIEWER_OVERSCAN = 2;
+    const TEXT_VIEWER_PRELOAD_BEFORE = 2;
+    const TEXT_VIEWER_PRELOAD_AFTER = 4;
     const CHAT_ITEM_GAP = 10;
     const CHAT_VIRTUALIZE_THRESHOLD = 20;
-    const CHAT_VIRTUAL_OVERSCAN = 1.2;
+    const CHAT_VIRTUAL_PRELOAD_BEFORE = 8;
+    const CHAT_VIRTUAL_PRELOAD_AFTER = 14;
+    const VIRTUAL_RETENTION_TTL = 30_000;
+    const VIRTUAL_RETENTION_TICK_MS = 5000;
     const INPUT_VIRTUALIZE_THRESHOLD = 2000;
     const INPUT_LINE_HEIGHT = 21;
     const INPUT_OVERSCAN_LINES = 18;
@@ -1443,6 +1461,31 @@
       if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
       if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
       return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+
+    function getHeightOffset(heights, endExclusive) {
+      let total = 0;
+      for (let i = 0; i < endExclusive; i += 1) {
+        total += heights[i] || 0;
+      }
+      return total;
+    }
+
+    function findIndexAtOffset(heights, targetOffset) {
+      if (!heights.length) {
+        return { index: 0, offset: 0 };
+      }
+
+      let offset = 0;
+      for (let i = 0; i < heights.length; i += 1) {
+        const nextHeight = heights[i] || 0;
+        if (offset + nextHeight > targetOffset || i === heights.length - 1) {
+          return { index: i, offset };
+        }
+        offset += nextHeight;
+      }
+
+      return { index: 0, offset: 0 };
     }
 
     function setInputDragActive(active) {
@@ -1508,16 +1551,53 @@
       const bottomSpacer = document.createElement('div');
       bottomSpacer.className = 'chat-spacer';
       chat.replaceChildren(topSpacer, host, bottomSpacer);
-      chatVirtualState = {
+      const state = {
         topSpacer,
         host,
         bottomSpacer,
         heights: new Map(),
+        nodeCache: new Map(),
         start: 0,
         end: 0,
         shouldVirtualize: false,
+        rowResizeObserver: null,
+        measureRaf: 0,
+        pendingAnchor: null,
       };
+      state.rowResizeObserver = new ResizeObserver((entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const row = entry.target;
+          const messageId = Number(row.dataset.messageId);
+          if (!Number.isFinite(messageId)) continue;
+          const measuredHeight = Math.ceil(row.getBoundingClientRect().height) + (row.dataset.isLast === '1' ? 0 : CHAT_ITEM_GAP);
+          if (measuredHeight > 0 && Math.abs(measuredHeight - (state.heights.get(messageId) || 0)) > 1) {
+            state.heights.set(messageId, measuredHeight);
+            changed = true;
+          }
+        }
+        if (!changed) return;
+        queueChatViewportStabilize(captureChatScrollAnchor());
+      });
+      chatVirtualState = state;
       return chatVirtualState;
+    }
+
+    function queueChatViewportStabilize(anchor = null) {
+      const state = ensureChatVirtualState();
+      if (anchor && !state.pendingAnchor) {
+        state.pendingAnchor = anchor;
+      }
+      if (state.measureRaf) return;
+      state.measureRaf = requestAnimationFrame(() => {
+        state.measureRaf = 0;
+        const nextAnchor = state.pendingAnchor;
+        state.pendingAnchor = null;
+        renderChatViewport({ forceMessageId: nextAnchor?.messageId ?? null });
+        if (nextAnchor) {
+          restoreChatScrollAnchor(nextAnchor);
+        }
+      });
     }
 
     function scheduleChatViewportRender(forceMessageId = null) {
@@ -1541,6 +1621,89 @@
           state.heights.delete(messageId);
         }
       });
+      Array.from(state.nodeCache.keys()).forEach((messageId) => {
+        if (!liveIds.has(messageId)) {
+          state.nodeCache.delete(messageId);
+        }
+      });
+    }
+
+    function syncCachedMessageRow(row, msg) {
+      if (!row) return;
+      row.className = 'item';
+      if (isSelfMessage(msg.id)) {
+        row.classList.add('self');
+      }
+      if (msg.id === getCurrentMediaMessageId()) {
+        row.classList.add('is-media-active');
+      }
+      row.dataset.messageId = String(msg.id);
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      if (checkbox) {
+        checkbox.checked = selectedIds.has(msg.id);
+      }
+      row.querySelectorAll('.bubble-copy-btn').forEach((button) => {
+        if (button.textContent !== '复制') {
+          button.textContent = '复制';
+        }
+      });
+    }
+
+    function getChatRow(msg) {
+      const state = ensureChatVirtualState();
+      const cached = state.nodeCache.get(msg.id);
+      if (cached && cached.manageMode === manageMode) {
+        cached.hiddenAt = null;
+        cached.lastSeenAt = Date.now();
+        syncCachedMessageRow(cached.row, msg);
+        return cached.row;
+      }
+
+      const row = renderMessage(msg);
+      state.nodeCache.set(msg.id, {
+        row,
+        manageMode,
+        hiddenAt: null,
+        lastSeenAt: Date.now(),
+      });
+      return row;
+    }
+
+    function markChatRowCacheVisibility(visibleIds = new Set()) {
+      const state = ensureChatVirtualState();
+      const now = Date.now();
+      for (const [messageId, entry] of state.nodeCache.entries()) {
+        if (visibleIds.has(messageId)) {
+          entry.hiddenAt = null;
+          entry.lastSeenAt = now;
+          continue;
+        }
+        if (entry.hiddenAt == null) {
+          entry.hiddenAt = now;
+        }
+      }
+    }
+
+    function sweepChatRowCache() {
+      const state = ensureChatVirtualState();
+      const now = Date.now();
+      for (const [messageId, entry] of state.nodeCache.entries()) {
+        if (entry.hiddenAt == null) continue;
+        if (now - entry.hiddenAt >= VIRTUAL_RETENTION_TTL) {
+          state.nodeCache.delete(messageId);
+        }
+      }
+    }
+
+    function sweepVirtualRetentionCaches() {
+      sweepChatRowCache();
+      sweepTextViewerBlockCache();
+    }
+
+    if (!virtualRetentionClock) {
+      virtualRetentionClock = window.setInterval(() => {
+        sweepVirtualRetentionCaches();
+      }, VIRTUAL_RETENTION_TICK_MS);
     }
 
     function estimateChatMessageHeight(msg) {
@@ -1578,7 +1741,8 @@
     }
 
     function computeChatViewport(messages, forceMessageId = null) {
-      const totalHeight = messages.reduce((sum, msg) => sum + getChatMessageHeight(msg), 0);
+      const heights = messages.map((msg) => getChatMessageHeight(msg));
+      const totalHeight = heights.reduce((sum, height) => sum + height, 0);
       const shouldVirtualize = messages.length >= CHAT_VIRTUALIZE_THRESHOLD;
       if (!shouldVirtualize) {
         return {
@@ -1591,52 +1755,40 @@
         };
       }
 
-      const overscanPx = chat.clientHeight * CHAT_VIRTUAL_OVERSCAN;
-      const startBoundary = Math.max(0, chat.scrollTop - overscanPx);
-      const endBoundary = chat.scrollTop + chat.clientHeight + overscanPx;
+      const visibleTop = findIndexAtOffset(heights, chat.scrollTop);
+      const endBoundary = chat.scrollTop + chat.clientHeight;
 
-      let start = 0;
-      let topHeight = 0;
-      while (start < messages.length) {
-        const nextHeight = getChatMessageHeight(messages[start]);
-        if (topHeight + nextHeight >= startBoundary) break;
-        topHeight += nextHeight;
-        start += 1;
+      let visibleEnd = visibleTop.index;
+      let renderedBottom = visibleTop.offset;
+      while (visibleEnd < messages.length && renderedBottom < endBoundary) {
+        renderedBottom += heights[visibleEnd];
+        visibleEnd += 1;
+      }
+      if (visibleEnd === visibleTop.index && visibleEnd < messages.length) {
+        renderedBottom += heights[visibleEnd];
+        visibleEnd += 1;
       }
 
-      let end = start;
-      let renderedBottom = topHeight;
-      while (end < messages.length && renderedBottom < endBoundary) {
-        renderedBottom += getChatMessageHeight(messages[end]);
-        end += 1;
-      }
-      if (end === start && end < messages.length) {
-        renderedBottom += getChatMessageHeight(messages[end]);
-        end += 1;
-      }
+      let start = Math.max(0, visibleTop.index - CHAT_VIRTUAL_PRELOAD_BEFORE);
+      let end = Math.min(messages.length, visibleEnd + CHAT_VIRTUAL_PRELOAD_AFTER);
 
       if (forceMessageId != null) {
         const forcedIndex = messages.findIndex((msg) => msg.id === forceMessageId);
         if (forcedIndex >= 0 && (forcedIndex < start || forcedIndex >= end)) {
-          start = forcedIndex;
-          topHeight = getChatOffsetForIndex(messages, forcedIndex);
-          end = forcedIndex + 1;
-          renderedBottom = topHeight + getChatMessageHeight(messages[forcedIndex]);
-          while (end < messages.length && renderedBottom < endBoundary) {
-            renderedBottom += getChatMessageHeight(messages[end]);
-            end += 1;
-          }
+          start = Math.max(0, forcedIndex - CHAT_VIRTUAL_PRELOAD_BEFORE);
+          end = Math.min(messages.length, Math.max(visibleEnd + CHAT_VIRTUAL_PRELOAD_AFTER, forcedIndex + 1 + CHAT_VIRTUAL_PRELOAD_AFTER));
         }
       }
 
-      const renderedHeight = Math.max(0, renderedBottom - topHeight);
+      const topHeight = getHeightOffset(heights, start);
+      const endHeight = getHeightOffset(heights, end);
       return {
         shouldVirtualize,
         totalHeight,
         start,
         end,
         topHeight,
-        bottomHeight: Math.max(0, totalHeight - topHeight - renderedHeight),
+        bottomHeight: Math.max(0, totalHeight - endHeight),
       };
     }
 
@@ -1662,9 +1814,15 @@
       state.topSpacer.style.height = viewport.shouldVirtualize ? `${viewport.topHeight}px` : '0px';
       state.bottomSpacer.style.height = viewport.shouldVirtualize ? `${viewport.bottomHeight}px` : '0px';
 
+      if (state.rowResizeObserver) {
+        state.rowResizeObserver.disconnect();
+      }
+
       const fragment = document.createDocumentFragment();
+      const visibleIds = new Set();
       for (let i = viewport.start; i < viewport.end; i += 1) {
-        fragment.appendChild(renderMessage(visible[i]));
+        visibleIds.add(visible[i].id);
+        fragment.appendChild(getChatRow(visible[i]));
       }
       state.host.replaceChildren(fragment);
 
@@ -1672,15 +1830,20 @@
       Array.from(state.host.children).forEach((row, offset) => {
         const msg = visible[viewport.start + offset];
         const isLast = viewport.start + offset >= visible.length - 1;
+        row.dataset.isLast = isLast ? '1' : '0';
         const measuredHeight = Math.ceil(row.getBoundingClientRect().height) + (isLast ? 0 : CHAT_ITEM_GAP);
         if (measuredHeight > 0 && Math.abs(measuredHeight - getChatMessageHeight(msg)) > 1) {
           state.heights.set(msg.id, measuredHeight);
           measuredChanged = true;
         }
+        if (state.rowResizeObserver) {
+          state.rowResizeObserver.observe(row);
+        }
       });
+      markChatRowCacheVisibility(visibleIds);
 
       if (measuredChanged) {
-        scheduleChatViewportRender(forceMessageId);
+        queueChatViewportStabilize(captureChatScrollAnchor());
       }
     }
 
@@ -2562,7 +2725,7 @@
 
     function cleanupActiveTextViewer() {
       if (!activeTextViewerState) return;
-      const { stage, scrollHandler, progressHandler, resizeObserver, zoomCleanup } = activeTextViewerState;
+      const { stage, scrollHandler, progressHandler, resizeObserver, zoomCleanup, blockResizeObserver, renderRaf } = activeTextViewerState;
       if (stage && scrollHandler) {
         stage.removeEventListener('scroll', scrollHandler);
       }
@@ -2571,6 +2734,12 @@
       }
       if (resizeObserver) {
         resizeObserver.disconnect();
+      }
+      if (blockResizeObserver) {
+        blockResizeObserver.disconnect();
+      }
+      if (renderRaf) {
+        cancelAnimationFrame(renderRaf);
       }
       if (typeof zoomCleanup === 'function') {
         zoomCleanup();
@@ -2618,37 +2787,104 @@
       return Math.round(logicalLines * lineHeight);
     }
 
+    function queueTextViewerViewportRefresh(state, preserveLine = null) {
+      if (!state) return;
+      if (preserveLine != null && state.pendingLine == null) {
+        state.pendingLine = preserveLine;
+      }
+      if (state.renderRaf) return;
+      state.renderRaf = requestAnimationFrame(() => {
+        state.renderRaf = 0;
+        const nextLine = state.pendingLine;
+        state.pendingLine = null;
+        renderTextViewerViewport(state);
+        if (nextLine != null) {
+          scrollTextViewerToLine(state, nextLine);
+        }
+      });
+    }
+
+    function getTextViewerBlockNode(state, index) {
+      const cached = state.blockCache.get(index);
+      if (cached) {
+        cached.hiddenAt = null;
+        cached.lastSeenAt = Date.now();
+        cached.node.dataset.blockIndex = String(index);
+        return cached.node;
+      }
+
+      const block = document.createElement('div');
+      block.className = 'text-viewer-block';
+      block.dataset.blockIndex = String(index);
+      block.textContent = state.blocks[index].text;
+      state.blockCache.set(index, {
+        node: block,
+        hiddenAt: null,
+        lastSeenAt: Date.now(),
+      });
+      return block;
+    }
+
+    function markTextViewerBlockCacheVisibility(state, visibleIndexes = new Set()) {
+      if (!state) return;
+      const now = Date.now();
+      for (const [index, entry] of state.blockCache.entries()) {
+        if (visibleIndexes.has(index)) {
+          entry.hiddenAt = null;
+          entry.lastSeenAt = now;
+          continue;
+        }
+        if (entry.hiddenAt == null) {
+          entry.hiddenAt = now;
+        }
+      }
+    }
+
+    function sweepTextViewerBlockCache() {
+      const state = activeTextViewerState;
+      if (!state?.blockCache) return;
+      const now = Date.now();
+      for (const [index, entry] of state.blockCache.entries()) {
+        if (entry.hiddenAt == null) continue;
+        if (now - entry.hiddenAt >= VIRTUAL_RETENTION_TTL) {
+          state.blockCache.delete(index);
+        }
+      }
+    }
+
     function renderTextViewerViewport(state) {
-      const { stage, blocks, heights, topSpacer, host, bottomSpacer } = state;
-      const overscanPx = stage.clientHeight * TEXT_VIEWER_OVERSCAN;
-      const startBoundary = Math.max(0, stage.scrollTop - overscanPx);
-      const endBoundary = stage.scrollTop + stage.clientHeight + overscanPx;
+      const { stage, heights, topSpacer, host, bottomSpacer, blockResizeObserver } = state;
+      const visibleTop = findIndexAtOffset(heights, stage.scrollTop);
+      const endBoundary = stage.scrollTop + stage.clientHeight;
 
-      let start = 0;
-      let topHeight = 0;
-      while (start < heights.length && topHeight + heights[start] < startBoundary) {
-        topHeight += heights[start];
-        start += 1;
+      let visibleEnd = visibleTop.index;
+      let renderedBottom = visibleTop.offset;
+      while (visibleEnd < heights.length && renderedBottom < endBoundary) {
+        renderedBottom += heights[visibleEnd];
+        visibleEnd += 1;
+      }
+      if (visibleEnd === visibleTop.index && visibleEnd < heights.length) {
+        renderedBottom += heights[visibleEnd];
+        visibleEnd += 1;
       }
 
-      let end = start;
-      let renderedBottom = topHeight;
-      while (end < heights.length && renderedBottom < endBoundary) {
-        renderedBottom += heights[end];
-        end += 1;
-      }
-      if (end === start && end < heights.length) {
-        renderedBottom += heights[end];
-        end += 1;
-      }
+      const start = Math.max(0, visibleTop.index - TEXT_VIEWER_PRELOAD_BEFORE);
+      const end = Math.min(heights.length, visibleEnd + TEXT_VIEWER_PRELOAD_AFTER);
+      const topHeight = getHeightOffset(heights, start);
+      const endHeight = getHeightOffset(heights, end);
+      const preservedLine = state.start !== state.end ? getTextViewerCurrentLine(state) : null;
 
       topSpacer.style.height = `${18 + topHeight}px`;
 
+      if (blockResizeObserver) {
+        blockResizeObserver.disconnect();
+      }
+
       const fragment = document.createDocumentFragment();
+      const visibleIndexes = new Set();
       for (let i = start; i < end; i += 1) {
-        const block = document.createElement('div');
-        block.className = 'text-viewer-block';
-        block.textContent = blocks[i].text;
+        visibleIndexes.add(i);
+        const block = getTextViewerBlockNode(state, i);
         fragment.appendChild(block);
       }
       host.replaceChildren(fragment);
@@ -2661,16 +2897,19 @@
           heights[index] = measuredHeight;
           measuredChanged = true;
         }
+        if (blockResizeObserver) {
+          blockResizeObserver.observe(node);
+        }
       });
 
       const totalHeight = heights.reduce((sum, height) => sum + height, 0);
-      const renderedHeight = heights.slice(start, end).reduce((sum, height) => sum + height, 0);
-      bottomSpacer.style.height = `${18 + Math.max(0, totalHeight - topHeight - renderedHeight)}px`;
+      bottomSpacer.style.height = `${18 + Math.max(0, totalHeight - endHeight)}px`;
       state.start = start;
       state.end = end;
+      markTextViewerBlockCacheVisibility(state, visibleIndexes);
 
       if (measuredChanged) {
-        requestAnimationFrame(() => renderTextViewerViewport(state));
+        queueTextViewerViewportRefresh(state, preservedLine);
       }
     }
 
@@ -2750,6 +2989,7 @@
         item,
         blocks,
         heights,
+        blockCache: new Map(),
         topSpacer,
         host,
           bottomSpacer,
@@ -2759,15 +2999,33 @@
           scrollHandler: null,
           progressHandler: null,
           resizeObserver: null,
+          blockResizeObserver: null,
           zoomCleanup: null,
+          renderRaf: 0,
+          pendingLine: null,
       };
 
       state.scrollHandler = () => renderTextViewerViewport(state);
       stage.addEventListener('scroll', state.scrollHandler, { passive: true });
       state.progressHandler = () => scheduleTextViewerProgressSave(item.id, getTextViewerCurrentLine(state));
       stage.addEventListener('scroll', state.progressHandler, { passive: true });
-      state.resizeObserver = new ResizeObserver(() => renderTextViewerViewport(state));
+      state.resizeObserver = new ResizeObserver(() => queueTextViewerViewportRefresh(state, getTextViewerCurrentLine(state)));
       state.resizeObserver.observe(stage);
+      state.blockResizeObserver = new ResizeObserver((entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const blockIndex = Number(entry.target.dataset.blockIndex);
+          if (!Number.isFinite(blockIndex)) continue;
+          const measuredHeight = Math.ceil(entry.target.getBoundingClientRect().height);
+          if (measuredHeight > 0 && Math.abs(measuredHeight - state.heights[blockIndex]) > 1) {
+            state.heights[blockIndex] = measuredHeight;
+            changed = true;
+          }
+        }
+        if (changed) {
+          queueTextViewerViewportRefresh(state, getTextViewerCurrentLine(state));
+        }
+      });
       state.zoomCleanup = attachTextViewerZoom(stage);
       activeTextViewerState = state;
       stage.scrollTop = Math.max(0, preservedScrollTop);
