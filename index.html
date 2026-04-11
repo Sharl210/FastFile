@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:," />
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
@@ -44,6 +45,10 @@
       position: relative;
       overflow: hidden;
     }
+    .page.manage-mode #chat {
+      height: var(--manage-chat-height, 66vh) !important;
+      max-height: var(--manage-chat-height, 66vh) !important;
+    }
     .topbar {
       display: flex;
       justify-content: space-between;
@@ -74,6 +79,51 @@
       gap: 6px;
       font-size: 13px;
       color: var(--muted);
+    }
+    .manage-menu-wrap {
+      position: relative;
+    }
+    .manage-filter-btn.active-text {
+      background: #ebfaef;
+      border-color: #b8e3c2;
+      color: #237a3b;
+    }
+    .manage-filter-btn.active-file,
+    .manage-filter-btn.active-search,
+    .manage-filter-btn.active-reset {
+      background: #fff6df;
+      border-color: #efd391;
+      color: #9a6b00;
+    }
+    .manage-filter-btn.active-image {
+      background: #f6edff;
+      border-color: #dcc6ff;
+      color: #6b43bd;
+    }
+    .manage-filter-btn.active-video {
+      background: #eaf5ff;
+      border-color: #c4dfff;
+      color: #2663c9;
+    }
+    .manage-filter-btn.active-audio {
+      background: #fff0f8;
+      border-color: #f3c9e2;
+      color: #b0488b;
+    }
+    .manage-popup-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 180px;
+      z-index: 90;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .manage-popup-menu button {
+      width: 100%;
+      text-align: left;
     }
     button, input[type="password"], input[type="file"], select {
       border-radius: 8px;
@@ -299,10 +349,90 @@
       color: var(--text);
       background: #fff;
       font-size: 14px;
+      line-height: 1.5;
+      font-family: inherit;
     }
     textarea:focus {
       border-color: #8fb0ea;
       box-shadow: 0 0 0 3px rgba(29, 114, 255, .1);
+    }
+    .input-stage {
+      position: relative;
+      border-radius: 10px;
+    }
+    .input-stage textarea {
+      position: relative;
+      z-index: 2;
+      background: transparent;
+      color: transparent;
+      caret-color: var(--text);
+    }
+    .input-stage textarea::selection {
+      background: rgba(29, 114, 255, .18);
+    }
+    .input-stage.mirror-disabled textarea {
+      background: #fff;
+      color: var(--text);
+      caret-color: auto;
+    }
+    .input-stage.mirror-disabled .input-virtual-layer {
+      display: none;
+    }
+    .input-virtual-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      overflow: hidden;
+      border: 1px solid #ccd7e7;
+      border-radius: 10px;
+      background: #fff;
+      pointer-events: none;
+    }
+    .input-virtual-scroll {
+      position: relative;
+      width: 100%;
+      min-height: 100%;
+    }
+    .input-virtual-content {
+      position: absolute;
+      left: 0;
+      right: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+      padding: 10px;
+      font-size: 14px;
+      line-height: 1.5;
+      font-family: inherit;
+    }
+    .editor-launch-btn {
+      margin-left: auto;
+      min-width: 44px;
+      padding-inline: 12px;
+    }
+    .draft-editor-stage {
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      display: flex;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    .draft-editor-textarea {
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      resize: none;
+      box-sizing: border-box;
+      border: 1px solid #ccd7e7;
+      border-radius: 18px;
+      background: #fff;
+      color: var(--text);
+      padding: 14px 16px;
+      box-shadow: inset 0 1px 4px rgba(34, 53, 88, .05);
+    }
+    .media-dialog.editor-mode #mediaViewerHint {
+      display: none;
     }
     .hidden { display: none !important; }
     .footer-note { color: var(--muted); font-size: 12px; }
@@ -372,6 +502,33 @@
       border-radius: 10px;
       padding: 10px;
       background: #fff;
+    }
+    .search-dialog {
+      width: min(560px, 100%);
+      background: #fff;
+      border-radius: 14px;
+      border: 1px solid #d8e2f0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      margin: auto;
+      max-height: min(92vh, 420px);
+    }
+    .search-dialog input {
+      width: 100%;
+    }
+    .search-dialog-actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .search-dialog-right {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-left: auto;
     }
     .task-title {
       display: flex;
@@ -940,6 +1097,21 @@
     </div>
   </div>
 
+  <div class="task-overlay hidden" id="searchOverlay">
+    <div class="search-dialog">
+      <strong>搜索消息</strong>
+      <div class="footer-note">支持搜索文本内容和文件名。搜索会和当前筛选一起生效。</div>
+      <input id="searchInput" type="text" placeholder="输入要搜索的关键词" />
+      <div class="search-dialog-actions">
+        <button id="clearSearchBtn" class="danger">清除搜索</button>
+        <div class="search-dialog-right">
+          <button id="closeSearchBtn">关闭</button>
+          <button id="confirmSearchBtn" class="success">确认</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="media-viewer hidden" id="mediaViewer">
     <div class="media-dialog" id="mediaDialog" tabindex="0">
       <div class="media-head">
@@ -956,7 +1128,7 @@
     </div>
   </div>
 
-  <div class="page">
+  <div class="page" id="appPage">
     <div class="topbar panel">
       <strong class="topbar-title">FastFile</strong>
       <div class="actions topbar-actions" id="normalActions">
@@ -965,19 +1137,23 @@
         <button id="refreshBtn">刷新</button>
       </div>
       <div class="actions manage-actions hidden" id="manageActions">
-        <button id="exitManageBtn" class="warning">完成管理</button>
+        <button id="exitManageBtn" class="warning">退出管理</button>
         <button id="selectAllBtn">全选</button>
         <button id="invertSelectBtn">反选</button>
-        <label class="topbar-select">
-          筛选
-          <select id="filterSelect">
-            <option value="all">全部</option>
-            <option value="file">仅文件</option>
-            <option value="text">仅文字</option>
-          </select>
-        </label>
+        <button id="searchBtn" class="manage-filter-btn">搜索</button>
+        <div class="manage-menu-wrap">
+          <button id="filterMenuBtn" class="manage-filter-btn">筛选</button>
+          <div class="panel manage-popup-menu hidden" id="filterMenu">
+            <button type="button" data-filter="all">全部</button>
+            <button type="button" data-filter="text">仅文字</button>
+            <button type="button" data-filter="file">仅文件</button>
+            <button type="button" data-filter="image">图片</button>
+            <button type="button" data-filter="video">视频</button>
+            <button type="button" data-filter="audio">音频</button>
+          </div>
+        </div>
         <button id="deleteBtn" class="danger">删除已勾选</button>
-        <button id="resetSizeBtn">恢复默认大小</button>
+        <button id="resetSizeBtn" class="manage-filter-btn">恢复默认窗口</button>
         <button id="restartBtn" class="danger">重启服务</button>
         <button id="logoutBtn" class="danger">退出登录</button>
       </div>
@@ -991,33 +1167,33 @@
       </div>
     </div>
 
-    <div class="panel">
-      <textarea id="textInput" placeholder="输入要发送的文本（Enter 发送，Ctrl + Enter 换行）"></textarea>
+    <div class="panel" id="composerPanel">
+      <div id="textInputStage" class="input-stage mirror-disabled">
+        <div class="input-virtual-layer" id="inputVirtualLayer" aria-hidden="true">
+          <div class="input-virtual-scroll" id="inputVirtualScroll">
+            <div class="input-virtual-content" id="inputVirtualContent"></div>
+          </div>
+        </div>
+        <textarea id="textInput" placeholder="输入要发送的文本（Enter 发送，Ctrl + Enter 换行）" spellcheck="false" autocorrect="off" autocomplete="off" autocapitalize="off"></textarea>
+      </div>
       <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
         <div style="position:relative;">
           <button id="plusMenuBtn" title="上传菜单">＋</button>
-          <div id="plusMenu" class="panel hidden" style="position:absolute; top:42px; left:0; min-width:180px; z-index:70; padding:8px;">
+          <div id="plusMenu" class="panel hidden" style="position:absolute; bottom:42px; left:0; min-width:180px; z-index:70; padding:8px;">
             <button id="pickImageBtn" style="width:100%; text-align:left; margin-bottom:6px;">图片上传</button>
             <button id="pickVideoBtn" style="width:100%; text-align:left; margin-bottom:6px;">视频上传</button>
-            <button id="pickAudioBtn" style="width:100%; text-align:left;">音频上传</button>
+            <button id="pickAudioBtn" style="width:100%; text-align:left; margin-bottom:6px;">音频上传</button>
+            <button id="pickFileBtn" style="width:100%; text-align:left;">文件上传</button>
           </div>
           <input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden" />
           <input id="videoUploadInput" type="file" accept="video/*" multiple class="hidden" />
           <input id="audioUploadInput" type="file" accept="audio/*,.flac,.wav,.aac,.m4a,.mp3,.ogg,.opus" multiple class="hidden" />
+          <input id="fileUploadInput" type="file" multiple class="hidden" />
         </div>
         <button id="sendTextBtn" class="primary">发送文本</button>
+        <button id="openEditorBtn" class="editor-launch-btn" title="全屏编辑">⤢</button>
       </div>
       <div class="footer-note" style="margin-top:8px;">支持直接粘贴图片到输入框自动上传。</div>
-    </div>
-
-    <div class="panel">
-      <input id="fileInput" type="file" multiple />
-      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-        <button id="sendFileBtn" class="primary">上传文件</button>
-      </div>
-      <div class="footer-note" style="margin-top:8px;">
-        支持多文件、断点续传、实时进度。任务可隐藏到后台继续执行。
-      </div>
     </div>
   </div>
 
@@ -1029,21 +1205,37 @@
     const loginError = document.getElementById('loginError');
 
     const chat = document.getElementById('chat');
+    const appPage = document.getElementById('appPage');
     const normalActions = document.getElementById('normalActions');
     const manageActions = document.getElementById('manageActions');
+    const searchOverlay = document.getElementById('searchOverlay');
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+    const clearSearchBtn = document.getElementById('clearSearchBtn');
+    const closeSearchBtn = document.getElementById('closeSearchBtn');
+    const confirmSearchBtn = document.getElementById('confirmSearchBtn');
+    const filterMenuBtn = document.getElementById('filterMenuBtn');
+    const filterMenu = document.getElementById('filterMenu');
+    const filterButtons = Array.from(filterMenu.querySelectorAll('[data-filter]'));
     const refreshBtn = document.getElementById('refreshBtn');
     const sendTextBtn = document.getElementById('sendTextBtn');
+    const openEditorBtn = document.getElementById('openEditorBtn');
     const plusMenuBtn = document.getElementById('plusMenuBtn');
     const plusMenu = document.getElementById('plusMenu');
     const pickImageBtn = document.getElementById('pickImageBtn');
     const pickVideoBtn = document.getElementById('pickVideoBtn');
     const pickAudioBtn = document.getElementById('pickAudioBtn');
+    const pickFileBtn = document.getElementById('pickFileBtn');
     const imageUploadInput = document.getElementById('imageUploadInput');
     const videoUploadInput = document.getElementById('videoUploadInput');
     const audioUploadInput = document.getElementById('audioUploadInput');
-    const sendFileBtn = document.getElementById('sendFileBtn');
+    const fileUploadInput = document.getElementById('fileUploadInput');
+    const textInputStage = document.getElementById('textInputStage');
+    const composerPanel = document.getElementById('composerPanel');
+    const inputVirtualLayer = document.getElementById('inputVirtualLayer');
+    const inputVirtualScroll = document.getElementById('inputVirtualScroll');
+    const inputVirtualContent = document.getElementById('inputVirtualContent');
     const textInput = document.getElementById('textInput');
-    const fileInput = document.getElementById('fileInput');
 
     const restartBtn = document.getElementById('restartBtn');
     const logoutBtn = document.getElementById('logoutBtn');
@@ -1051,7 +1243,6 @@
     const exitManageBtn = document.getElementById('exitManageBtn');
     const selectAllBtn = document.getElementById('selectAllBtn');
     const invertSelectBtn = document.getElementById('invertSelectBtn');
-    const filterSelect = document.getElementById('filterSelect');
     const deleteBtn = document.getElementById('deleteBtn');
     const resetSizeBtn = document.getElementById('resetSizeBtn');
 
@@ -1078,6 +1269,7 @@
     let allMessages = [];
     let manageMode = false;
     let currentFilter = 'all';
+    let currentSearchQuery = '';
     const selectedIds = new Set();
 
     let restartArmed = false;
@@ -1110,6 +1302,7 @@
     let activeAudioVisualizerCleanup = null;
     let activeAudioShellCleanup = null;
     let activeTextViewerState = null;
+    let activeEditorState = null;
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
@@ -1126,6 +1319,9 @@
     const TEXT_VIEWER_WRAP_BLOCK_LINES = 28;
     const TEXT_VIEWER_NOWRAP_BLOCK_LINES = 40;
     const TEXT_VIEWER_OVERSCAN = 2;
+    const INPUT_VIRTUALIZE_THRESHOLD = 2000;
+    const INPUT_LINE_HEIGHT = 21;
+    const INPUT_OVERSCAN_LINES = 18;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -1241,6 +1437,8 @@
       textWrapEnabled = text_wrap_enabled !== false;
       textViewerZoom = Number.isFinite(Number(text_zoom_scale)) && Number(text_zoom_scale) > 0 ? Number(text_zoom_scale) : 1;
       syncTextViewerWrapUi();
+      syncInputVirtualization();
+      updateResetSizeButtonState();
       updateScrollButtonState();
       setTimeout(() => {
         suppressUiResizeSave = false;
@@ -1261,7 +1459,7 @@
     }
 
     function scheduleUiStateSave() {
-      if (suppressUiResizeSave || !token) return;
+      if (suppressUiResizeSave || !token || manageMode) return;
       if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
       uiStateSaveTimer = setTimeout(() => {
         saveUiState({
@@ -1344,6 +1542,131 @@
       const raw = String(name || '');
       const pos = raw.lastIndexOf('.');
       return pos > 0 ? raw.slice(0, pos) : raw;
+    }
+
+    function getMessageMediaKind(msg) {
+      const mimeType = String(msg?.mime_type || '');
+      if (mimeType.startsWith('image/')) return 'image';
+      if (mimeType.startsWith('video/')) return 'video';
+      if (mimeType.startsWith('audio/')) return 'audio';
+      return null;
+    }
+
+    function isPlainFileMessage(msg) {
+      return msg?.kind === 'file' && !getMessageMediaKind(msg);
+    }
+
+    function normalizeSearchQuery(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function matchesSearchQuery(msg, query = currentSearchQuery) {
+      if (!query) return true;
+      const text = msg?.kind === 'text' ? String(msg.text || '') : '';
+      const fileName = msg?.kind === 'file' ? String(msg.file_name || '') : '';
+      return text.toLowerCase().includes(query) || fileName.toLowerCase().includes(query);
+    }
+
+    function matchesCurrentFilter(msg) {
+      if (currentFilter === 'all') return true;
+      if (currentFilter === 'text') return msg.kind === 'text';
+      if (currentFilter === 'file') return isPlainFileMessage(msg);
+      return getMessageMediaKind(msg) === currentFilter;
+    }
+
+    function isDefaultWindowLayout() {
+      const chatDefault = !chat.style.height || chat.style.height === DEFAULT_CHAT_HEIGHT;
+      const inputDefault = !textInput.style.height || textInput.style.height === DEFAULT_INPUT_HEIGHT;
+      return chatDefault && inputDefault;
+    }
+
+    function updateResetSizeButtonState() {
+      resetSizeBtn.classList.toggle('active-reset', !isDefaultWindowLayout());
+    }
+
+    function updateFilterButtonStates() {
+      filterMenuBtn.classList.remove('active-text', 'active-file', 'active-image', 'active-video', 'active-audio');
+      if (currentFilter !== 'all') {
+        filterMenuBtn.classList.add(`active-${currentFilter}`);
+      }
+      searchBtn.classList.toggle('active-search', Boolean(currentSearchQuery));
+      updateResetSizeButtonState();
+    }
+
+    function openSearchDialog() {
+      searchInput.value = currentSearchQuery;
+      searchOverlay.classList.remove('hidden');
+      requestAnimationFrame(() => {
+        searchInput.focus();
+        searchInput.select();
+      });
+    }
+
+    function closeSearchDialog() {
+      searchOverlay.classList.add('hidden');
+    }
+
+    function toggleFilterMenu(force) {
+      const nextHidden = typeof force === 'boolean' ? !force : !filterMenu.classList.contains('hidden');
+      filterMenu.classList.toggle('hidden', nextHidden);
+    }
+
+    function applySearchQuery(value) {
+      currentSearchQuery = normalizeSearchQuery(value);
+      updateFilterButtonStates();
+      renderMessages({ preserveScroll: true });
+    }
+
+    function syncVirtualTextareaBinding(binding, { force = false } = {}) {
+      if (!binding?.textarea || !binding?.stage || !binding?.content || !binding?.scroll) return;
+      const value = binding.textarea.value || '';
+      const isActivelyEditing = document.activeElement === binding.textarea;
+      const needsMirror = !isActivelyEditing && (force || binding.alwaysMirror || value.length >= INPUT_VIRTUALIZE_THRESHOLD);
+      binding.stage.classList.toggle('mirror-disabled', !needsMirror);
+      if (!needsMirror) {
+        binding.content.textContent = '';
+        binding.scroll.style.height = `${binding.textarea.scrollHeight || binding.textarea.clientHeight || 0}px`;
+        return;
+      }
+
+      const lines = value.split('\n');
+      const totalLines = Math.max(lines.length, 1);
+      const scrollTop = binding.textarea.scrollTop;
+      const scrollHeight = binding.textarea.scrollHeight || binding.textarea.clientHeight || 0;
+      const viewportHeight = binding.textarea.clientHeight || parseInt(binding.textarea.style.height || '0', 10) || 110;
+      const estimatedVisualLines = Math.max(1, Math.round(scrollHeight / INPUT_LINE_HEIGHT));
+      const wrapHeavy = estimatedVisualLines > totalLines + INPUT_OVERSCAN_LINES;
+
+      if (wrapHeavy) {
+        binding.content.textContent = value || ' ';
+        binding.content.style.top = '0px';
+        binding.scroll.style.height = `${scrollHeight}px`;
+        if (binding.layer) {
+          binding.layer.scrollTop = scrollTop;
+        }
+        return;
+      }
+
+      const startLine = Math.max(0, Math.floor(scrollTop / INPUT_LINE_HEIGHT) - INPUT_OVERSCAN_LINES);
+      const visibleLineCount = Math.max(1, Math.ceil(viewportHeight / INPUT_LINE_HEIGHT) + INPUT_OVERSCAN_LINES * 2);
+      const endLine = Math.min(totalLines, startLine + visibleLineCount);
+      binding.content.textContent = lines.slice(startLine, endLine).join('\n') || ' ';
+      binding.content.style.top = `${startLine * INPUT_LINE_HEIGHT}px`;
+      binding.scroll.style.height = `${Math.max(scrollHeight, totalLines * INPUT_LINE_HEIGHT + 20)}px`;
+      if (binding.layer) {
+        binding.layer.scrollTop = scrollTop;
+      }
+    }
+
+    function syncInputVirtualization() {
+      syncVirtualTextareaBinding({
+        stage: textInputStage,
+        textarea: textInput,
+        layer: inputVirtualLayer,
+        scroll: inputVirtualScroll,
+        content: inputVirtualContent,
+        alwaysMirror: false,
+      }, { force: Boolean(activeEditorState) });
     }
 
     function getTextPreview(text) {
@@ -1574,24 +1897,10 @@
       if (audioVisualPending.has(key)) return audioVisualPending.get(key);
 
       const pending = (async () => {
-        try {
-          const response = await fetch(item.file_url);
-          if (!response.ok) throw new Error('音频读取失败');
-          const buffer = await response.arrayBuffer();
-          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-          const decoded = await audioContext.decodeAudioData(buffer.slice(0));
-          const channelData = decoded.getChannelData(0);
-          const payload = { background: renderWaveformBackground(channelData), duration: decoded.duration };
-          setAudioVisual(item, payload);
-          await audioContext.close().catch(() => {});
-          return payload;
-        } catch (_) {
-          const payload = { background: null, duration: null };
-          setAudioVisual(item, payload);
-          return payload;
-        } finally {
-          audioVisualPending.delete(key);
-        }
+        const payload = { background: null, duration: null };
+        setAudioVisual(item, payload);
+        audioVisualPending.delete(key);
+        return payload;
       })();
 
       audioVisualPending.set(key, pending);
@@ -1800,15 +2109,20 @@
 
     function resetMediaDialogLayout() {
       cleanupActiveTextViewer();
+      cleanupActiveEditor();
       mediaDialog.style.width = '';
       mediaStage.style.width = '';
       mediaStage.style.height = '';
       mediaStage.classList.remove('placeholder-surface');
       mediaDialog.classList.remove('image-mode');
       mediaDialog.classList.remove('text-mode');
+      mediaDialog.classList.remove('editor-mode');
       mediaDialog.classList.remove('video-mode');
       mediaDialog.classList.remove('audio-mode');
+      mediaPrevBtn.classList.remove('hidden');
+      mediaNextBtn.classList.remove('hidden');
       mediaCopyBtn.classList.add('hidden');
+      mediaCloseBtn.textContent = '关闭';
       mediaCopyBtn.textContent = '复制';
       renderMediaViewerHint(null);
     }
@@ -1875,6 +2189,14 @@
         zoomCleanup();
       }
       activeTextViewerState = null;
+    }
+
+    function cleanupActiveEditor() {
+      if (!activeEditorState) return;
+      if (activeEditorState.resizeObserver) {
+        activeEditorState.resizeObserver.disconnect();
+      }
+      activeEditorState = null;
     }
 
     function splitTextViewerBlocks(text, wrapEnabled) {
@@ -2095,6 +2417,9 @@
 
     function renderMediaViewerHint(item) {
       mediaViewerHint.innerHTML = '';
+      if (currentViewerMode === 'editor') {
+        return;
+      }
       if (item?.kind !== 'text') {
         mediaViewerHint.textContent = '提示：键盘 ↑/↓ 可切换上一条/下一条';
         return;
@@ -2227,6 +2552,41 @@
         stage.removeEventListener('gestureend', endPinch);
         endPinch();
       };
+    }
+
+    function openDraftEditor() {
+      cleanupActiveAudioVisualizer();
+      cleanupActiveAudioShell();
+      resetMediaDialogLayout();
+      mediaIndex = -1;
+      currentViewerMode = 'editor';
+      mediaStage.innerHTML = '';
+      mediaDialog.classList.add('text-mode', 'editor-mode');
+      fitMediaDialogForText();
+      mediaPrevBtn.classList.add('hidden');
+      mediaNextBtn.classList.add('hidden');
+      mediaCopyBtn.classList.remove('hidden');
+      mediaCloseBtn.textContent = '收起';
+      mediaCopyBtn.textContent = '复制';
+      mediaViewerTitle.textContent = '草稿编辑器';
+      renderMediaViewerHint(null);
+
+      const stage = document.createElement('div');
+      stage.className = 'draft-editor-stage';
+
+      const textarea = document.createElement('textarea');
+      textarea.className = 'draft-editor-textarea';
+      textarea.value = textInput.value;
+      textarea.placeholder = '在这里整理长文本草稿，关闭后带回下方输入框';
+      textarea.spellcheck = false;
+      textarea.setAttribute('autocorrect', 'off');
+      textarea.setAttribute('autocomplete', 'off');
+      textarea.setAttribute('autocapitalize', 'off');
+      stage.appendChild(textarea);
+      mediaStage.appendChild(stage);
+      activeEditorState = { textarea, resizeObserver: null };
+      mediaViewer.classList.remove('hidden');
+      requestAnimationFrame(() => textarea.focus());
     }
 
     function attachAudioVisualizer(audio, canvas, meta) {
@@ -2492,10 +2852,47 @@
       });
     }
 
+    function captureChatScrollAnchor() {
+      const chatRect = chat.getBoundingClientRect();
+      const rows = Array.from(chat.querySelectorAll('.item[data-message-id]'));
+      const anchorRow = rows.find((row) => row.getBoundingClientRect().bottom > chatRect.top + 1) || rows[0] || null;
+      if (!anchorRow) {
+        return {
+          messageId: null,
+          offset: 0,
+          scrollTop: chat.scrollTop,
+        };
+      }
+      return {
+        messageId: Number(anchorRow.dataset.messageId),
+        offset: anchorRow.getBoundingClientRect().top - chatRect.top,
+        scrollTop: chat.scrollTop,
+      };
+    }
+
+    function restoreChatScrollAnchor(anchor) {
+      if (!anchor) return;
+      if (anchor.messageId == null) {
+        chat.scrollTop = Math.min(anchor.scrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+        updateScrollButtonState();
+        return;
+      }
+      const anchorRow = chat.querySelector(`.item[data-message-id="${anchor.messageId}"]`);
+      if (!anchorRow) {
+        chat.scrollTop = Math.min(anchor.scrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+        updateScrollButtonState();
+        return;
+      }
+      const chatRect = chat.getBoundingClientRect();
+      const nextOffset = anchorRow.getBoundingClientRect().top - chatRect.top;
+      const nextScrollTop = chat.scrollTop + (nextOffset - anchor.offset);
+      chat.scrollTop = Math.max(0, Math.min(nextScrollTop, chat.scrollHeight - chat.clientHeight));
+      updateScrollButtonState();
+    }
+
     function getVisibleMessages() {
-      if (currentFilter === 'file') return allMessages.filter((m) => m.kind === 'file');
-      if (currentFilter === 'text') return allMessages.filter((m) => m.kind === 'text');
-      return allMessages;
+      if (!manageMode) return allMessages;
+      return allMessages.filter((msg) => matchesCurrentFilter(msg) && matchesSearchQuery(msg));
     }
 
     async function api(path, options = {}) {
@@ -2622,7 +3019,7 @@
         } else if ((msg.mime_type || '').startsWith('video/')) {
           const video = document.createElement('video');
           video.className = 'thumb';
-          video.preload = 'auto';
+          video.preload = 'metadata';
           video.muted = true;
           video.playsInline = true;
           video.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -2806,6 +3203,7 @@
           const video = document.createElement('video');
           video.controls = true;
           video.autoplay = true;
+          video.preload = 'metadata';
           video.playsInline = true;
           video.addEventListener('play', () => pauseOtherVideos(video));
           video.addEventListener('loadedmetadata', () => {
@@ -2895,11 +3293,24 @@
     }
 
     async function closeMediaViewer() {
+      const closingEditorText = currentViewerMode === 'editor' && activeEditorState?.textarea
+        ? activeEditorState.textarea.value
+        : null;
       await persistActiveVideoProgress();
       await persistActiveTextViewerProgress();
       cleanupActiveAudioVisualizer();
       cleanupActiveAudioShell();
       resetMediaDialogLayout();
+      if (closingEditorText != null) {
+        textInput.value = closingEditorText;
+        textInputStage.classList.add('mirror-disabled');
+        requestAnimationFrame(() => {
+          textInput.focus();
+          const caret = textInput.value.length;
+          textInput.setSelectionRange(caret, caret);
+          syncInputVirtualization();
+        });
+      }
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
       mediaIndex = -1;
@@ -2915,15 +3326,35 @@
     }
 
     function updateManageUi() {
+      const scrollAnchor = captureChatScrollAnchor();
+      suppressUiResizeSave = true;
+      appPage.classList.toggle('manage-mode', manageMode);
       normalActions.classList.toggle('hidden', manageMode);
       manageActions.classList.toggle('hidden', !manageMode);
+      if (manageMode) {
+        const chatHeight = Math.round(chat.getBoundingClientRect().height);
+        const composerHeight = Math.round(composerPanel.getBoundingClientRect().height);
+        appPage.style.setProperty('--manage-chat-height', `${chatHeight + composerHeight}px`);
+      } else {
+        appPage.style.removeProperty('--manage-chat-height');
+      }
+      composerPanel.classList.toggle('hidden', manageMode);
       if (!manageMode) {
         selectedIds.clear();
         resetDeleteButton();
         resetRestartButton();
         resetLogoutButton();
+        closeSearchDialog();
+      } else {
+        plusMenu.classList.add('hidden');
       }
-      renderMessages({ preserveScroll: true });
+      updateFilterButtonStates();
+      renderMessages({ preserveScroll: false });
+      requestAnimationFrame(() => {
+        restoreChatScrollAnchor(scrollAnchor);
+        suppressUiResizeSave = false;
+        updateResetSizeButtonState();
+      });
     }
 
     function applyMessages(messages, { followBottom = false, preserveScroll = true } = {}) {
@@ -3052,6 +3483,7 @@
       });
       markMessageAsSelf(created.id);
       textInput.value = '';
+      syncInputVirtualization();
       await loadMessages({ source: 'send-text', followBottom: false, preserveScroll: true });
       await animateChatScroll(chat.scrollHeight - chat.clientHeight);
     }
@@ -3397,12 +3829,6 @@
       }
     }
 
-    async function sendFiles() {
-      const files = Array.from(fileInput.files || []);
-      await enqueueFiles(files);
-      fileInput.value = '';
-    }
-
     function resetRestartButton() {
       restartArmed = false;
       restartBtn.textContent = '重启服务';
@@ -3490,14 +3916,16 @@
       loadMessages({ source: 'manual-refresh', followBottom: isChatNearBottom(), preserveScroll: !isChatNearBottom() }).catch((e) => alert(e.message));
     };
     sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
-    sendFileBtn.onclick = () => sendFiles().catch((e) => alert(e.message));
+    openEditorBtn.onclick = () => openDraftEditor();
 
     plusMenuBtn.onclick = () => {
+      toggleFilterMenu(false);
       plusMenu.classList.toggle('hidden');
     };
     pickImageBtn.onclick = () => imageUploadInput.click();
     pickVideoBtn.onclick = () => videoUploadInput.click();
     pickAudioBtn.onclick = () => audioUploadInput.click();
+    pickFileBtn.onclick = () => fileUploadInput.click();
     imageUploadInput.onchange = () => {
       enqueueFiles(imageUploadInput.files).catch((e) => alert(e.message));
       imageUploadInput.value = '';
@@ -3511,6 +3939,11 @@
     audioUploadInput.onchange = () => {
       enqueueFiles(audioUploadInput.files).catch((e) => alert(e.message));
       audioUploadInput.value = '';
+      plusMenu.classList.add('hidden');
+    };
+    fileUploadInput.onchange = () => {
+      enqueueFiles(fileUploadInput.files).catch((e) => alert(e.message));
+      fileUploadInput.value = '';
       plusMenu.classList.add('hidden');
     };
 
@@ -3532,10 +3965,55 @@
     resetSizeBtn.onclick = () => restoreDefaultUiState().catch((e) => alert(e.message));
     selectAllBtn.onclick = selectAllVisible;
     invertSelectBtn.onclick = invertVisible;
-    filterSelect.onchange = () => {
-      currentFilter = filterSelect.value;
-      renderMessages({ preserveScroll: true });
+    searchBtn.onclick = () => {
+      toggleFilterMenu(false);
+      openSearchDialog();
     };
+    filterMenuBtn.onclick = () => {
+      plusMenu.classList.add('hidden');
+      toggleFilterMenu();
+    };
+    clearSearchBtn.onclick = () => {
+      searchInput.value = '';
+      applySearchQuery('');
+      closeSearchDialog();
+    };
+    closeSearchBtn.onclick = closeSearchDialog;
+    confirmSearchBtn.onclick = () => {
+      applySearchQuery(searchInput.value);
+      closeSearchDialog();
+    };
+    filterButtons.forEach((button) => {
+      button.onclick = () => {
+        currentFilter = button.dataset.filter || 'all';
+        updateFilterButtonStates();
+        toggleFilterMenu(false);
+        renderMessages({ preserveScroll: true });
+      };
+    });
+
+    textInput.addEventListener('input', syncInputVirtualization);
+    textInput.addEventListener('pointerdown', () => {
+      textInputStage.classList.add('mirror-disabled');
+    });
+    textInput.addEventListener('mousedown', () => {
+      textInputStage.classList.add('mirror-disabled');
+    });
+    textInput.addEventListener('scroll', syncInputVirtualization);
+    textInput.addEventListener('click', syncInputVirtualization);
+    textInput.addEventListener('keyup', syncInputVirtualization);
+    textInput.addEventListener('focus', syncInputVirtualization);
+    textInput.addEventListener('blur', syncInputVirtualization);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applySearchQuery(searchInput.value);
+        closeSearchDialog();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSearchDialog();
+      }
+    });
 
     uploadTasksBtn.onclick = openUploadTasksPanel;
     hideTaskPanelBtn.onclick = hideUploadTasksPanel;
@@ -3556,6 +4034,7 @@
         const end = textInput.selectionEnd ?? textInput.value.length;
         textInput.value = `${textInput.value.slice(0, start)}\n${textInput.value.slice(end)}`;
         textInput.selectionStart = textInput.selectionEnd = start + 1;
+        syncInputVirtualization();
         return;
       }
       if (!e.shiftKey) {
@@ -3565,6 +4044,7 @@
     });
 
     textInput.addEventListener('paste', (e) => {
+      textInputStage.classList.add('mirror-disabled');
       const items = Array.from(e.clipboardData?.items || []);
       const images = [];
       for (const item of items) {
@@ -3577,6 +4057,7 @@
         e.preventDefault();
         enqueueFiles(images).catch((err) => alert(err.message));
       }
+      requestAnimationFrame(syncInputVirtualization);
     });
 
     chat.addEventListener('scroll', () => {
@@ -3604,6 +4085,8 @@
     const resizeObserver = new ResizeObserver(() => {
       scheduleUiStateSave();
       updateScrollButtonState();
+      syncInputVirtualization();
+      updateResetSizeButtonState();
     });
     resizeObserver.observe(chat);
     resizeObserver.observe(textInput);
@@ -3611,6 +4094,18 @@
     mediaPrevBtn.onclick = () => switchMedia(-1).catch(() => {});
     mediaNextBtn.onclick = () => switchMedia(1).catch(() => {});
     mediaCopyBtn.onclick = async () => {
+      if (currentViewerMode === 'editor') {
+        try {
+          await copyRawText(activeEditorState?.textarea?.value || '');
+          mediaCopyBtn.textContent = '已复制';
+          setTimeout(() => {
+            mediaCopyBtn.textContent = '复制';
+          }, 1200);
+        } catch (err) {
+          alert(err.message || '复制失败');
+        }
+        return;
+      }
       const item = mediaList[mediaIndex];
       if (!item || item.kind !== 'text') return;
       try {
@@ -3629,6 +4124,12 @@
       if (!plusMenu.contains(e.target) && e.target !== plusMenuBtn) {
         plusMenu.classList.add('hidden');
       }
+      if (!filterMenu.contains(e.target) && e.target !== filterMenuBtn) {
+        toggleFilterMenu(false);
+      }
+      if (e.target === searchOverlay) {
+        closeSearchDialog();
+      }
       if (e.target === mediaViewer) {
         closeMediaViewer().catch(() => {});
       }
@@ -3636,7 +4137,14 @@
 
     document.addEventListener('keydown', (e) => {
       if (mediaViewer.classList.contains('hidden')) return;
-      if (e.target === textInput || e.target === passwordInput) return;
+      if (e.target === textInput || e.target === passwordInput || e.target === activeEditorState?.textarea) return;
+      if (currentViewerMode === 'editor') {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeMediaViewer().catch(() => {});
+        }
+        return;
+      }
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         switchMedia(-1).catch(() => {});
@@ -3650,6 +4158,14 @@
     });
 
     mediaDialog.addEventListener('keydown', (e) => {
+      if (currentViewerMode === 'editor') {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          closeMediaViewer().catch(() => {});
+        }
+        return;
+      }
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         e.stopPropagation();
@@ -3684,6 +4200,8 @@
 
     updateRefreshButtonState();
     updateScrollButtonState();
+    updateFilterButtonStates();
+    syncInputVirtualization();
   </script>
 </body>
 </html>
