@@ -1097,6 +1097,7 @@
     let scrollAnimationFrame = 0;
     const selfMessageIds = new Set();
     const mediaProgressCache = new Map();
+    const textProgressCache = new Map();
     const mediaCompatibilityCache = new Map();
     const audioVisualCache = new Map();
     const audioVisualPending = new Map();
@@ -1106,6 +1107,7 @@
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
+    let textProgressSaveTimer = 0;
     let textViewerZoomSaveTimer = 0;
     let textWrapEnabled = true;
     let textViewerZoom = 1;
@@ -1115,7 +1117,7 @@
     const MEDIA_VIEWPORT_MAX_RATIO = 0.9;
     const TEXT_PREVIEW_MAX_LINES = 5;
     const TEXT_PREVIEW_MAX_CHARS = 200;
-    const TEXT_VIEWER_WRAP_BLOCK_CHARS = 1600;
+    const TEXT_VIEWER_WRAP_BLOCK_LINES = 28;
     const TEXT_VIEWER_NOWRAP_BLOCK_LINES = 40;
     const TEXT_VIEWER_OVERSCAN = 2;
 
@@ -1286,6 +1288,28 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position_seconds: safePosition }),
+      });
+    }
+
+    async function fetchTextProgress(messageId) {
+      if (!messageId) return 1;
+      if (textProgressCache.has(messageId)) {
+        return textProgressCache.get(messageId);
+      }
+      const result = await api(`/api/text-progress/${messageId}`);
+      const value = Math.max(1, Number(result.line_number || 1));
+      textProgressCache.set(messageId, value);
+      return value;
+    }
+
+    async function saveTextProgress(messageId, lineNumber) {
+      if (!token || !messageId) return;
+      const safeLine = Math.max(1, Number(lineNumber || 1));
+      textProgressCache.set(messageId, safeLine);
+      await api(`/api/text-progress/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ line_number: safeLine }),
       });
     }
 
@@ -1831,9 +1855,12 @@
 
     function cleanupActiveTextViewer() {
       if (!activeTextViewerState) return;
-      const { stage, scrollHandler, resizeObserver, zoomCleanup } = activeTextViewerState;
+      const { stage, scrollHandler, progressHandler, resizeObserver, zoomCleanup } = activeTextViewerState;
       if (stage && scrollHandler) {
         stage.removeEventListener('scroll', scrollHandler);
+      }
+      if (stage && progressHandler) {
+        stage.removeEventListener('scroll', progressHandler);
       }
       if (resizeObserver) {
         resizeObserver.disconnect();
@@ -1845,34 +1872,32 @@
     }
 
     function splitTextViewerBlocks(text, wrapEnabled) {
-      const raw = String(text || '');
-      if (!raw) return [''];
-      if (wrapEnabled) {
-        const blocks = [];
-        for (let i = 0; i < raw.length; i += TEXT_VIEWER_WRAP_BLOCK_CHARS) {
-          blocks.push(raw.slice(i, i + TEXT_VIEWER_WRAP_BLOCK_CHARS));
-        }
-        return blocks;
-      }
-
-      const lines = raw.split('\n');
+      const lines = String(text || '').split('\n');
+      if (!lines.length) lines.push('');
+      const blockLineCount = wrapEnabled ? TEXT_VIEWER_WRAP_BLOCK_LINES : TEXT_VIEWER_NOWRAP_BLOCK_LINES;
       const blocks = [];
-      for (let i = 0; i < lines.length; i += TEXT_VIEWER_NOWRAP_BLOCK_LINES) {
-        blocks.push(lines.slice(i, i + TEXT_VIEWER_NOWRAP_BLOCK_LINES).join('\n'));
+      for (let i = 0; i < lines.length; i += blockLineCount) {
+        const blockLines = lines.slice(i, i + blockLineCount);
+        blocks.push({
+          startLine: i + 1,
+          endLine: i + blockLines.length,
+          lineCount: blockLines.length,
+          text: blockLines.join('\n'),
+        });
       }
       return blocks;
     }
 
-    function estimateTextViewerBlockHeight(blockText, wrapEnabled, stageWidth) {
+    function estimateTextViewerBlockHeight(block, wrapEnabled, stageWidth) {
       const fontSize = 14 * textViewerZoom;
       const lineHeight = fontSize * 1.65;
       if (!wrapEnabled) {
-        return Math.round(Math.max(1, String(blockText || '').split('\n').length) * lineHeight);
+        return Math.round(Math.max(1, block?.lineCount || 1) * lineHeight);
       }
 
       const usableWidth = Math.max(220, stageWidth - 40);
       const charsPerLine = Math.max(12, Math.floor(usableWidth / Math.max(7, fontSize * 0.58)));
-      const logicalLines = String(blockText || '').split('\n').reduce((sum, line) => {
+      const logicalLines = String(block?.text || '').split('\n').reduce((sum, line) => {
         return sum + Math.max(1, Math.ceil(Math.max(line.length, 1) / charsPerLine));
       }, 0);
       return Math.round(logicalLines * lineHeight);
@@ -1908,7 +1933,7 @@
       for (let i = start; i < end; i += 1) {
         const block = document.createElement('div');
         block.className = 'text-viewer-block';
-        block.textContent = blocks[i];
+        block.textContent = blocks[i].text;
         fragment.appendChild(block);
       }
       host.replaceChildren(fragment);
@@ -1934,10 +1959,65 @@
       }
     }
 
-    function mountTextViewerState(stage, item, preservedScrollTop = 0) {
+    function getTextViewerCurrentLine(state) {
+      if (!state?.blocks?.length) return 1;
+      const scrollTop = Math.max(0, state.stage.scrollTop);
+      let topHeight = 0;
+      for (let i = 0; i < state.blocks.length; i += 1) {
+        const block = state.blocks[i];
+        const blockHeight = state.heights[i] || 0;
+        const blockBottom = topHeight + blockHeight;
+        if (scrollTop <= blockBottom || i === state.blocks.length - 1) {
+          const offset = Math.max(0, scrollTop - topHeight);
+          const ratio = blockHeight > 0 ? Math.min(0.999, offset / blockHeight) : 0;
+          const lineOffset = Math.floor(ratio * Math.max(1, block.lineCount));
+          return Math.min(block.endLine, block.startLine + lineOffset);
+        }
+        topHeight = blockBottom;
+      }
+      return state.totalLines || 1;
+    }
+
+    function scrollTextViewerToLine(state, lineNumber) {
+      if (!state?.blocks?.length) return;
+      const targetLine = Math.max(1, Math.min(state.totalLines || 1, Number(lineNumber || 1)));
+      let topHeight = 0;
+      for (let i = 0; i < state.blocks.length; i += 1) {
+        const block = state.blocks[i];
+        const blockHeight = state.heights[i] || 0;
+        if (targetLine >= block.startLine && targetLine <= block.endLine) {
+          const ratio = block.lineCount > 0 ? (targetLine - block.startLine) / block.lineCount : 0;
+          state.stage.scrollTop = Math.max(0, topHeight + blockHeight * ratio);
+          renderTextViewerViewport(state);
+          return;
+        }
+        topHeight += blockHeight;
+      }
+    }
+
+    function scheduleTextViewerProgressSave(messageId, lineNumber) {
+      if (!messageId) return;
+      if (textProgressSaveTimer) clearTimeout(textProgressSaveTimer);
+      textProgressSaveTimer = setTimeout(() => {
+        saveTextProgress(messageId, lineNumber).catch(() => {});
+      }, 240);
+    }
+
+    async function persistActiveTextViewerProgress() {
+      const item = mediaList[mediaIndex];
+      if (!item || item.kind !== 'text' || !activeTextViewerState) return;
+      const currentLine = getTextViewerCurrentLine(activeTextViewerState);
+      if (textProgressSaveTimer) {
+        clearTimeout(textProgressSaveTimer);
+        textProgressSaveTimer = 0;
+      }
+      await saveTextProgress(item.id, currentLine);
+    }
+
+    function mountTextViewerState(stage, item, preservedScrollTop = 0, preservedLine = 1) {
       const blocks = splitTextViewerBlocks(item.text || '', textWrapEnabled);
       const stageWidth = stage.clientWidth || parseInt(mediaStage.style.width || '0', 10) || 640;
-      const heights = blocks.map((blockText) => estimateTextViewerBlockHeight(blockText, textWrapEnabled, stageWidth));
+      const heights = blocks.map((block) => estimateTextViewerBlockHeight(block, textWrapEnabled, stageWidth));
 
       stage.innerHTML = '';
       stage.classList.toggle('wrap-disabled', !textWrapEnabled);
@@ -1957,22 +2037,33 @@
         heights,
         topSpacer,
         host,
-        bottomSpacer,
-        start: 0,
-        end: 0,
-        scrollHandler: null,
-        resizeObserver: null,
-        zoomCleanup: null,
+          bottomSpacer,
+          totalLines: blocks.length ? blocks[blocks.length - 1].endLine : 1,
+          start: 0,
+          end: 0,
+          scrollHandler: null,
+          progressHandler: null,
+          resizeObserver: null,
+          zoomCleanup: null,
       };
 
       state.scrollHandler = () => renderTextViewerViewport(state);
       stage.addEventListener('scroll', state.scrollHandler, { passive: true });
+      state.progressHandler = () => scheduleTextViewerProgressSave(item.id, getTextViewerCurrentLine(state));
+      stage.addEventListener('scroll', state.progressHandler, { passive: true });
       state.resizeObserver = new ResizeObserver(() => renderTextViewerViewport(state));
       state.resizeObserver.observe(stage);
       state.zoomCleanup = attachTextViewerZoom(stage);
       activeTextViewerState = state;
       stage.scrollTop = Math.max(0, preservedScrollTop);
       renderTextViewerViewport(state);
+      if (preservedLine > 1) {
+        requestAnimationFrame(() => {
+          if (activeTextViewerState === state) {
+            scrollTextViewerToLine(state, preservedLine);
+          }
+        });
+      }
     }
 
     function syncTextViewerWrapUi() {
@@ -1988,9 +2079,11 @@
       }
 
       if (activeTextViewerState && textStage) {
+        const activeItem = activeTextViewerState.item;
         const keepScrollTop = textStage.scrollTop;
+        const keepLine = getTextViewerCurrentLine(activeTextViewerState);
         cleanupActiveTextViewer();
-        mountTextViewerState(textStage, activeTextViewerState?.item || mediaList[mediaIndex], keepScrollTop);
+        mountTextViewerState(textStage, activeItem || mediaList[mediaIndex], keepScrollTop, keepLine);
       }
     }
 
@@ -2629,6 +2722,7 @@
       if (index < 0 || index >= mediaList.length) return;
 
       await persistActiveVideoProgress();
+      await persistActiveTextViewerProgress();
       cleanupActiveAudioVisualizer();
       cleanupActiveAudioShell();
       resetMediaDialogLayout();
@@ -2646,7 +2740,8 @@
         const textStage = document.createElement('div');
         textStage.className = 'text-viewer-stage';
         mediaStage.appendChild(textStage);
-        mountTextViewerState(textStage, item);
+        const savedLine = await fetchTextProgress(item.id);
+        mountTextViewerState(textStage, item, 0, savedLine);
       } else if (mt.startsWith('image/')) {
         mediaDialog.classList.add('image-mode');
         const cached = getMediaCompatibility(item);
@@ -2761,6 +2856,7 @@
 
     async function closeMediaViewer() {
       await persistActiveVideoProgress();
+      await persistActiveTextViewerProgress();
       cleanupActiveAudioVisualizer();
       cleanupActiveAudioShell();
       resetMediaDialogLayout();

@@ -169,6 +169,16 @@ struct VideoProgressRequest {
     position_seconds: f64,
 }
 
+#[derive(Serialize)]
+struct TextProgressResponse {
+    line_number: i64,
+}
+
+#[derive(Deserialize)]
+struct TextProgressRequest {
+    line_number: i64,
+}
+
 #[derive(Debug)]
 struct UploadedPart {
     start_byte: i64,
@@ -336,6 +346,11 @@ fn init_storage(
         CREATE TABLE IF NOT EXISTS video_progress (
             file_id TEXT PRIMARY KEY,
             position_seconds REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS text_progress (
+            message_id INTEGER PRIMARY KEY,
+            line_number INTEGER NOT NULL,
             updated_at TEXT NOT NULL
         );
         ",
@@ -710,6 +725,51 @@ async fn update_video_progress(
 
     Ok(Json(VideoProgressResponse {
         position_seconds: payload.position_seconds,
+    }))
+}
+
+async fn get_text_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(message_id): AxumPath<i64>,
+) -> Result<Json<TextProgressResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    let conn = open_conn(&state.db_path)?;
+    let line_number = conn
+        .query_row(
+            "SELECT line_number FROM text_progress WHERE message_id = ?1",
+            params![message_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(1);
+
+    Ok(Json(TextProgressResponse {
+        line_number: line_number.max(1),
+    }))
+}
+
+async fn update_text_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(message_id): AxumPath<i64>,
+    Json(payload): Json<TextProgressRequest>,
+) -> Result<Json<TextProgressResponse>, AppError> {
+    require_auth(&headers, &state).await?;
+
+    if payload.line_number <= 0 {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "文本行号无效"));
+    }
+
+    let conn = open_conn(&state.db_path)?;
+    conn.execute(
+        "INSERT INTO text_progress (message_id, line_number, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(message_id) DO UPDATE SET line_number = excluded.line_number, updated_at = excluded.updated_at",
+        params![message_id, payload.line_number, now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("保存文本进度失败: {e}")))?;
+
+    Ok(Json(TextProgressResponse {
+        line_number: payload.line_number,
     }))
 }
 
@@ -1249,6 +1309,11 @@ async fn delete_messages(
             .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理视频进度失败: {e}")))?;
     }
 
+    let text_progress_placeholders = vec!["?"; ids.len()].join(",");
+    let text_progress_sql = format!("DELETE FROM text_progress WHERE message_id IN ({text_progress_placeholders})");
+    conn.execute(&text_progress_sql, rusqlite::params_from_iter(ids.iter().copied()))
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理文本进度失败: {e}")))?;
+
     let deleted = conn
         .execute(&sql_del, rusqlite::params_from_iter(ids.iter().copied()))
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
@@ -1451,6 +1516,7 @@ async fn run() -> Result<(), AppError> {
         .route("/api/ui-state", get(get_ui_state).put(update_ui_state))
         .route("/api/ui-state/reset", post(reset_ui_state))
         .route("/api/video-progress/:file_id", get(get_video_progress).put(update_video_progress))
+        .route("/api/text-progress/:message_id", get(get_text_progress).put(update_text_progress))
         .route("/api/messages", get(list_messages).delete(delete_messages))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))
