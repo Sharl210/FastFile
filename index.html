@@ -629,12 +629,12 @@
       position: absolute;
       left: 16px;
       right: 16px;
-      bottom: 6px;
+      bottom: 2px;
       z-index: 2;
       display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
       color: #243043;
       padding: 12px 14px;
       border-radius: 18px;
@@ -645,11 +645,12 @@
     }
     .audio-shell-progress {
       position: relative;
-      height: 3px;
+      height: 4px;
       border-radius: 999px;
       background: rgba(148, 167, 196, 0.28);
       overflow: visible;
       cursor: pointer;
+      min-width: 0;
     }
     .audio-shell-progress-fill {
       position: absolute;
@@ -691,15 +692,35 @@
       font-variant-numeric: tabular-nums;
     }
     .audio-shell-volume-wrap {
+      position: relative;
       display: flex;
       align-items: center;
-      gap: 10px;
       justify-self: end;
     }
+    .audio-shell-volume-popover {
+      position: absolute;
+      right: -2px;
+      bottom: calc(100% + 10px);
+      width: 44px;
+      height: 132px;
+      border-radius: 18px;
+      border: 1px solid rgba(205, 216, 238, 0.95);
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 12px 28px rgba(62, 96, 159, 0.16);
+      backdrop-filter: blur(12px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 0;
+    }
+    .audio-shell-volume-wrap.open .audio-shell-volume-popover {
+      display: flex;
+    }
     .audio-shell-volume {
-      width: 82px;
+      width: 96px;
       accent-color: #7fc7ff;
       opacity: .72;
+      transform: rotate(-90deg);
     }
     .media-stage .media-placeholder {
       width: 100%;
@@ -755,7 +776,7 @@
       .media-dialog.audio-mode .audio-shell-footer {
         left: 10px;
         right: 10px;
-        bottom: 12px;
+        bottom: 8px;
         gap: 8px;
         padding: 8px 10px;
         border-radius: 14px;
@@ -774,8 +795,14 @@
         min-width: 46px;
         font-size: 10px;
       }
+      .media-dialog.audio-mode .audio-shell-volume-popover {
+        width: 40px;
+        height: 114px;
+        bottom: calc(100% + 8px);
+        border-radius: 14px;
+      }
       .media-dialog.audio-mode .audio-shell-volume {
-        width: 52px;
+        width: 82px;
       }
     }
   </style>
@@ -970,6 +997,7 @@
     const audioVisualCache = new Map();
     const audioVisualPending = new Map();
     let activeAudioVisualizerCleanup = null;
+    let activeAudioShellCleanup = null;
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
@@ -1408,6 +1436,13 @@
       media.addEventListener('canplay', tryPlay, { once: true });
     }
 
+    function cleanupActiveAudioShell() {
+      if (typeof activeAudioShellCleanup === 'function') {
+        activeAudioShellCleanup();
+      }
+      activeAudioShellCleanup = null;
+    }
+
     function formatMediaClock(sec) {
       if (!Number.isFinite(sec) || sec < 0) return '0:00';
       const total = Math.floor(sec);
@@ -1467,6 +1502,9 @@
       volumeBtn.className = 'audio-shell-btn';
       volumeBtn.type = 'button';
       volumeBtn.textContent = '🔊';
+      volumeBtn.setAttribute('aria-label', '音量');
+      const volumePopover = document.createElement('div');
+      volumePopover.className = 'audio-shell-volume-popover';
       const volume = document.createElement('input');
       volume.className = 'audio-shell-volume';
       volume.type = 'range';
@@ -1474,8 +1512,9 @@
       volume.max = '100';
       volume.step = '1';
       volume.value = String(Math.round((audio.volume || 1) * 100));
+      volumePopover.appendChild(volume);
       volumeWrap.appendChild(volumeBtn);
-      volumeWrap.appendChild(volume);
+      volumeWrap.appendChild(volumePopover);
 
       controls.appendChild(toggleBtn);
       controls.appendChild(current);
@@ -1515,14 +1554,22 @@
         sync();
       });
       volumeBtn.onclick = () => {
-        audio.muted = !audio.muted;
-        sync();
+        volumeWrap.classList.toggle('open');
       };
+      const closeVolumePopover = (event) => {
+        if (volumeWrap.contains(event.target)) return;
+        volumeWrap.classList.remove('open');
+      };
+      document.addEventListener('pointerdown', closeVolumePopover, true);
 
       ['play', 'pause', 'timeupdate', 'loadedmetadata', 'volumechange', 'ended'].forEach((eventName) => {
         audio.addEventListener(eventName, sync);
       });
       sync();
+
+      activeAudioShellCleanup = () => {
+        document.removeEventListener('pointerdown', closeVolumePopover, true);
+      };
 
       return { shell, canvas, meta, sync };
     }
@@ -1677,10 +1724,11 @@
         const maxBarHeight = height * 0.8;
         const minBarHeight = height * 0.22;
         const rawLevels = new Float32Array(bars);
+        const usableBins = Math.max(bars, Math.floor(samples.length * 0.62));
 
         for (let i = 0; i < bars; i += 1) {
-          const startIndex = Math.floor(i * samples.length / bars);
-          const endIndex = Math.max(startIndex + 1, Math.floor((i + 1) * samples.length / bars));
+          const startIndex = Math.floor(((i / bars) ** 1.35) * usableBins);
+          const endIndex = Math.max(startIndex + 1, Math.floor((((i + 1) / bars) ** 1.35) * usableBins));
           let sum = 0;
           let count = 0;
           for (let j = startIndex; j < endIndex; j += 1) {
@@ -2098,6 +2146,7 @@
 
       await persistActiveVideoProgress();
       cleanupActiveAudioVisualizer();
+      cleanupActiveAudioShell();
       resetMediaDialogLayout();
 
       mediaIndex = index;
@@ -2196,6 +2245,7 @@
     async function closeMediaViewer() {
       await persistActiveVideoProgress();
       cleanupActiveAudioVisualizer();
+      cleanupActiveAudioShell();
       resetMediaDialogLayout();
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
