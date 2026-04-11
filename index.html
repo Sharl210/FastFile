@@ -604,6 +604,7 @@
       white-space: pre-wrap;
       word-break: break-word;
       overscroll-behavior: contain;
+      touch-action: pan-x pan-y;
     }
     .text-viewer-stage.wrap-disabled {
       white-space: pre;
@@ -2056,6 +2057,7 @@
       };
       const touchStartHandler = (event) => {
         if (event.touches.length !== 2) return;
+        event.preventDefault();
         const [a, b] = event.touches;
         pinchDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         pinchStartZoom = textViewerZoom;
@@ -2071,17 +2073,26 @@
       const touchEndHandler = () => {
         pinchDistance = 0;
       };
+      const gestureBlockHandler = (event) => {
+        event.preventDefault();
+      };
 
       stage.addEventListener('wheel', wheelHandler, { passive: false });
       stage.addEventListener('touchstart', touchStartHandler, { passive: false });
       stage.addEventListener('touchmove', touchMoveHandler, { passive: false });
       stage.addEventListener('touchend', touchEndHandler, { passive: true });
+      stage.addEventListener('gesturestart', gestureBlockHandler, { passive: false });
+      stage.addEventListener('gesturechange', gestureBlockHandler, { passive: false });
+      stage.addEventListener('gestureend', gestureBlockHandler, { passive: false });
 
       return () => {
         stage.removeEventListener('wheel', wheelHandler);
         stage.removeEventListener('touchstart', touchStartHandler);
         stage.removeEventListener('touchmove', touchMoveHandler);
         stage.removeEventListener('touchend', touchEndHandler);
+        stage.removeEventListener('gesturestart', gestureBlockHandler);
+        stage.removeEventListener('gesturechange', gestureBlockHandler);
+        stage.removeEventListener('gestureend', gestureBlockHandler);
       };
     }
 
