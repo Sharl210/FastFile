@@ -407,6 +407,7 @@
       background: #fff;
       border-radius: 14px;
       border: 1px solid #d4e1f2;
+      position: relative;
       display: flex;
       flex-direction: column;
       gap: 0;
@@ -437,10 +438,25 @@
       box-shadow: none;
     }
     .media-dialog.audio-mode .media-head {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      z-index: 3;
+      padding: 0;
+      background: transparent;
+      justify-content: flex-end;
+    }
+    .media-dialog.audio-mode #mediaViewerTitle {
       display: none;
     }
     .media-dialog.audio-mode #mediaViewerHint {
       display: none;
+    }
+    .media-dialog.audio-mode .media-head button {
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(255,255,255,0.14);
+      color: #fff;
+      backdrop-filter: blur(8px);
     }
     .media-dialog.audio-mode .media-stage {
       background: #000;
@@ -545,20 +561,26 @@
     }
     .audio-shell-info {
       position: absolute;
-      left: 54px;
-      bottom: 92px;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -62%);
+      width: min(72%, 760px);
       display: flex;
       flex-direction: column;
       gap: 6px;
       color: #fff;
       z-index: 2;
       text-shadow: 0 1px 2px rgba(0,0,0,.24);
+      align-items: center;
+      text-align: center;
+      pointer-events: none;
     }
     .audio-shell-name {
       font-size: 22px;
       font-weight: 700;
       line-height: 1.2;
       letter-spacing: .01em;
+      word-break: break-word;
     }
     .audio-shell-meta {
       font-size: 13px;
@@ -566,6 +588,7 @@
       display: flex;
       gap: 10px;
       align-items: center;
+      justify-content: center;
     }
     .audio-shell-footer {
       position: absolute;
@@ -1325,7 +1348,7 @@
       name.textContent = item.file_name || '音频文件';
       const meta = document.createElement('div');
       meta.className = 'audio-shell-meta';
-      meta.innerHTML = `<span>${formatMediaClock(0)}</span><span>${formatAudioMime(item.mime_type, item.file_name)}</span>`;
+      meta.innerHTML = `<span>${formatAudioMime(item.mime_type, item.file_name)}</span>`;
       info.appendChild(name);
       info.appendChild(meta);
       shell.appendChild(info);
@@ -1505,11 +1528,11 @@
         ctx.fillStyle = 'rgba(255,255,255,0.02)';
         ctx.fillRect(playedWidth, 0, width - playedWidth, height);
 
-        const bars = 4;
-        const spanWidth = width * 0.125;
-        const gap = width * 0.01;
+        const bars = Math.max(14, Math.min(24, Math.round(width / 84)));
+        const spanWidth = width * 0.9;
+        const gap = width * 0.0045;
         const barWidth = (spanWidth - gap * (bars - 1)) / bars;
-        const clusterStart = width * 0.055;
+        const clusterStart = width * 0.03;
         const gradient = ctx.createLinearGradient(0, 0, width, 0);
         gradient.addColorStop(0, 'rgba(255, 184, 92, 0.92)');
         gradient.addColorStop(0.22, 'rgba(255, 232, 94, 0.96)');
@@ -1517,25 +1540,25 @@
         gradient.addColorStop(0.76, 'rgba(93, 214, 255, 0.92)');
         gradient.addColorStop(1, 'rgba(159, 141, 255, 0.9)');
         const glowGradient = ctx.createLinearGradient(clusterStart, 0, clusterStart + spanWidth, 0);
-        glowGradient.addColorStop(0, 'rgba(255, 176, 66, 0.13)');
-        glowGradient.addColorStop(0.55, 'rgba(108, 224, 255, 0.06)');
-        glowGradient.addColorStop(1, 'rgba(159, 141, 255, 0.03)');
+        glowGradient.addColorStop(0, 'rgba(255, 176, 66, 0.16)');
+        glowGradient.addColorStop(0.5, 'rgba(108, 224, 255, 0.09)');
+        glowGradient.addColorStop(1, 'rgba(159, 141, 255, 0.05)');
         ctx.fillStyle = glowGradient;
-        ctx.fillRect(clusterStart - width * 0.018, height * 0.15, spanWidth + width * 0.038, height * 0.68);
+        ctx.fillRect(clusterStart - width * 0.015, height * 0.08, spanWidth + width * 0.03, height * 0.8);
 
         ctx.fillStyle = gradient;
-        const floorY = height * 0.82;
-        const maxBarHeight = height * 0.6;
-        const minBarHeight = height * 0.26;
+        const floorY = height * 0.86;
+        const maxBarHeight = height * 0.76;
+        const minBarHeight = height * 0.2;
 
         for (let i = 0; i < bars; i += 1) {
           const sampleIndex = Math.min(samples.length - 1, Math.floor(i * samples.length / bars));
           const sample = samples[sampleIndex] / 255;
-          const weight = 1 - Math.abs(i - (bars - 1) / 2) * 0.12;
-          const barHeight = Math.max(minBarHeight, sample * maxBarHeight * weight);
+          const edgeFade = 0.92 + (1 - Math.abs((i / Math.max(bars - 1, 1)) * 2 - 1)) * 0.08;
+          const barHeight = Math.max(minBarHeight, sample * maxBarHeight * edgeFade);
           const x = clusterStart + i * (barWidth + gap);
           const y = floorY - barHeight;
-          const w = Math.max(22, barWidth);
+          const w = Math.max(width * 0.014, barWidth);
           const radius = Math.min(10, w / 2);
           ctx.beginPath();
           ctx.moveTo(x + radius, y);
