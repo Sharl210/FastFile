@@ -275,13 +275,6 @@ fn parse_runtime_users(raw: &str) -> Vec<RuntimeUser> {
         }
     }
 
-    if users.is_empty() {
-        return vec![RuntimeUser {
-            user_id: user_id_from_password("REDACTED_PASSWORD"),
-            password: "REDACTED_PASSWORD".to_string(),
-        }];
-    }
-
     users
 }
 
@@ -1813,7 +1806,7 @@ async fn run() -> Result<(), AppError> {
     let temp_dir = storage_root.join("tmp");
     let db_path = storage_root.join("messages.db");
 
-    let initial_runtime_config = load_runtime_config(&config_path);
+    let initial_runtime_config = load_runtime_config(&config_path)?;
     let primary_user_id = initial_runtime_config.primary_user_id().to_string();
     let runtime_config = Arc::new(RwLock::new(initial_runtime_config));
 
@@ -1837,9 +1830,15 @@ async fn run() -> Result<(), AppError> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            let cfg = load_runtime_config(&config_path);
-            let mut guard = runtime_config.write().await;
-            *guard = cfg;
+            match load_runtime_config(&config_path) {
+                Ok(cfg) => {
+                    let mut guard = runtime_config.write().await;
+                    *guard = cfg;
+                }
+                Err(err) => {
+                    eprintln!("配置热加载失败: {}", err.message);
+                }
+            }
         }
     });
 
@@ -1878,14 +1877,22 @@ async fn run() -> Result<(), AppError> {
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("服务异常: {e}")))
 }
 
-fn load_runtime_config(config_path: &Path) -> RuntimeConfig {
+fn load_runtime_config(config_path: &Path) -> Result<RuntimeConfig, AppError> {
     let file_map = load_config_map(config_path);
 
     let password_raw = file_map
         .get("FASTFILE_PASSWORD")
         .cloned()
         .or_else(|| env::var("FASTFILE_PASSWORD").ok())
-        .unwrap_or_else(|| "REDACTED_PASSWORD".to_string());
+        .unwrap_or_default();
+
+    let users = parse_runtime_users(&password_raw);
+    if users.is_empty() {
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "缺少 FASTFILE_PASSWORD，请在 fastfile.env 或环境变量中显式设置登录密码",
+        ));
+    }
 
     let session_ttl_seconds = file_map
         .get("FASTFILE_SESSION_TTL_SECONDS")
@@ -1898,10 +1905,10 @@ fn load_runtime_config(config_path: &Path) -> RuntimeConfig {
         .filter(|v| *v > 0)
         .unwrap_or(86_400);
 
-    RuntimeConfig {
-        users: parse_runtime_users(&password_raw),
+    Ok(RuntimeConfig {
+        users,
         session_ttl_seconds,
-    }
+    })
 }
 
 fn load_config_map(config_path: &Path) -> HashMap<String, String> {
