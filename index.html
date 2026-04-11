@@ -135,6 +135,9 @@
       transition: transform .05s ease, box-shadow .12s ease, filter .12s ease;
       box-shadow: 0 1px 0 rgba(25, 31, 43, .04);
     }
+    :root {
+      --composer-action-size: 38px;
+    }
     button {
       cursor: pointer;
       user-select: none;
@@ -153,15 +156,20 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-width: 44px;
-      width: 44px;
-      height: 44px;
-      min-height: 44px;
+      min-width: var(--composer-action-size);
+      width: var(--composer-action-size);
+      height: var(--composer-action-size);
+      min-height: var(--composer-action-size);
       padding: 0;
       font-size: 20px;
       line-height: 1;
       text-align: center;
       box-sizing: border-box;
+    }
+    #sendTextBtn {
+      min-height: var(--composer-action-size);
+      padding-top: 0;
+      padding-bottom: 0;
     }
     .primary {
       background: var(--accent);
@@ -381,6 +389,28 @@
     .input-stage {
       position: relative;
       border-radius: 10px;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .input-stage.drag-upload-active {
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 4px rgba(29, 114, 255, .08);
+    }
+    .input-stage.drag-upload-active::after {
+      content: '松手即可上传文件';
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed #1d72ff;
+      border-radius: 10px;
+      background: rgba(29, 114, 255, .08);
+      color: #0f4bcf;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      pointer-events: none;
     }
     .input-stage textarea {
       position: relative;
@@ -388,6 +418,10 @@
       background: transparent;
       color: transparent;
       caret-color: var(--text);
+    }
+    .input-stage.drag-upload-active textarea {
+      border-color: #1d72ff;
+      background: rgba(29, 114, 255, .03);
     }
     .input-stage textarea::selection {
       background: rgba(29, 114, 255, .18);
@@ -410,6 +444,10 @@
       background: #fff;
       pointer-events: none;
     }
+    .input-stage.drag-upload-active .input-virtual-layer {
+      border-color: #1d72ff;
+      background: rgba(29, 114, 255, .03);
+    }
     .input-virtual-scroll {
       position: relative;
       width: 100%;
@@ -429,8 +467,22 @@
     }
     .editor-launch-btn {
       margin-left: auto;
-      min-width: 44px;
-      padding-inline: 12px;
+      min-width: var(--composer-action-size);
+      width: var(--composer-action-size);
+      height: var(--composer-action-size);
+      min-height: var(--composer-action-size);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    .composer-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+      align-items: stretch;
     }
     .draft-editor-stage {
       width: 100%;
@@ -1224,7 +1276,7 @@
         </div>
         <textarea id="textInput" placeholder="输入要发送的文本（Enter 发送，Ctrl + Enter 换行）" spellcheck="false" autocorrect="off" autocomplete="off" autocapitalize="off"></textarea>
       </div>
-      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
+      <div class="composer-actions">
         <div style="position:relative;">
           <button id="plusMenuBtn" title="上传菜单">+</button>
           <div id="plusMenu" class="panel hidden" style="position:absolute; bottom:42px; left:0; min-width:180px; z-index:70; padding:8px;">
@@ -1241,7 +1293,7 @@
         <button id="sendTextBtn" class="primary">发送文本</button>
         <button id="openEditorBtn" class="editor-launch-btn" title="全屏编辑">⤢</button>
       </div>
-      <div class="footer-note" style="margin-top:8px;">支持直接粘贴图片到输入框自动上传。</div>
+      <div class="footer-note" id="composerHint" style="margin-top:8px;">支持把文件拖到输入框上传，也支持直接粘贴任意文件或图片自动上传。</div>
     </div>
   </div>
 
@@ -1280,6 +1332,7 @@
     const fileUploadInput = document.getElementById('fileUploadInput');
     const textInputStage = document.getElementById('textInputStage');
     const composerPanel = document.getElementById('composerPanel');
+    const composerHint = document.getElementById('composerHint');
     const inputVirtualLayer = document.getElementById('inputVirtualLayer');
     const inputVirtualScroll = document.getElementById('inputVirtualScroll');
     const inputVirtualContent = document.getElementById('inputVirtualContent');
@@ -1382,6 +1435,7 @@
     const INPUT_OVERSCAN_LINES = 18;
     const LARGE_PASTE_THRESHOLD = 120000;
     const LARGE_PASTE_CHUNK_SIZE = 24000;
+    let inputDragDepth = 0;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -1389,6 +1443,31 @@
       if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
       if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
       return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+
+    function setInputDragActive(active) {
+      textInputStage.classList.toggle('drag-upload-active', active);
+      if (composerHint) {
+        composerHint.textContent = active
+          ? '松手即可上传文件。'
+          : '支持把文件拖到输入框上传，也支持直接粘贴任意文件或图片自动上传。';
+      }
+    }
+
+    function transferHasFiles(dataTransfer) {
+      if (!dataTransfer) return false;
+      if (dataTransfer.files && dataTransfer.files.length > 0) return true;
+      return Array.from(dataTransfer.items || []).some((item) => item.kind === 'file');
+    }
+
+    function extractClipboardFiles(items) {
+      const files = [];
+      for (const item of Array.from(items || [])) {
+        if (item.kind !== 'file') continue;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+      return files;
     }
 
     function formatDuration(sec) {
@@ -4635,17 +4714,10 @@
 
     textInput.addEventListener('paste', (e) => {
       textInputStage.classList.add('mirror-disabled');
-      const items = Array.from(e.clipboardData?.items || []);
-      const images = [];
-      for (const item of items) {
-        if (item.kind === 'file' && item.type.startsWith('image/')) {
-          const file = item.getAsFile();
-          if (file) images.push(file);
-        }
-      }
-      if (images.length) {
+      const files = extractClipboardFiles(e.clipboardData?.items);
+      if (files.length) {
         e.preventDefault();
-        enqueueFiles(images).catch((err) => alert(err.message));
+        enqueueFiles(files).catch((err) => alert(err.message));
         return;
       }
       if (handleLargeTextPaste(e, textInput, {
@@ -4655,6 +4727,38 @@
         return;
       }
       requestAnimationFrame(syncInputVirtualization);
+    });
+
+    textInputStage.addEventListener('dragenter', (e) => {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      inputDragDepth += 1;
+      setInputDragActive(true);
+    });
+    textInputStage.addEventListener('dragover', (e) => {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
+      if (!textInputStage.classList.contains('drag-upload-active')) {
+        setInputDragActive(true);
+      }
+    });
+    textInputStage.addEventListener('dragleave', (e) => {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      inputDragDepth = Math.max(0, inputDragDepth - 1);
+      if (!textInputStage.contains(e.relatedTarget) && inputDragDepth === 0) {
+        setInputDragActive(false);
+      }
+    });
+    textInputStage.addEventListener('drop', (e) => {
+      if (!transferHasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      inputDragDepth = 0;
+      setInputDragActive(false);
+      enqueueFiles(e.dataTransfer?.files || []).catch((err) => alert(err.message));
     });
 
     chat.addEventListener('scroll', () => {
