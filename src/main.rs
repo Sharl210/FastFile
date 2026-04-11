@@ -27,6 +27,8 @@ use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use urlencoding::encode;
 
+const MESSAGES_REVISION_KEY: &str = "messages_revision";
+
 #[derive(Clone)]
 struct AppState {
     db_path: PathBuf,
@@ -34,13 +36,29 @@ struct AppState {
     temp_dir: PathBuf,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     startup_config: StartupConfig,
-    sessions: Arc<Mutex<HashMap<String, i64>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionRecord>>>,
 }
 
 #[derive(Clone)]
 struct RuntimeConfig {
-    password: String,
+    users: Vec<RuntimeUser>,
     session_ttl_seconds: i64,
+}
+
+#[derive(Clone)]
+struct RuntimeUser {
+    user_id: String,
+    password: String,
+}
+
+#[derive(Clone)]
+struct SessionRecord {
+    expire_at: i64,
+    user_id: String,
+}
+
+struct AuthSession {
+    user_id: String,
 }
 
 #[derive(Clone)]
@@ -71,6 +89,7 @@ struct AuthRequest {
 #[derive(Serialize)]
 struct AuthResponse {
     token: String,
+    user_id: String,
 }
 
 #[derive(Deserialize)]
@@ -239,6 +258,50 @@ fn create_token() -> String {
         .collect()
 }
 
+fn user_id_from_password(password: &str) -> String {
+    let digest = sha256_hex(password.as_bytes());
+    format!("u_{}", &digest[..16])
+}
+
+fn parse_runtime_users(raw: &str) -> Vec<RuntimeUser> {
+    let mut users = Vec::new();
+    for password in raw.split(',').map(str::trim).filter(|value| !value.is_empty()) {
+        let user = RuntimeUser {
+            user_id: user_id_from_password(password),
+            password: password.to_string(),
+        };
+        if users.iter().all(|existing: &RuntimeUser| existing.user_id != user.user_id) {
+            users.push(user);
+        }
+    }
+
+    if users.is_empty() {
+        return vec![RuntimeUser {
+            user_id: user_id_from_password("REDACTED_PASSWORD"),
+            password: "REDACTED_PASSWORD".to_string(),
+        }];
+    }
+
+    users
+}
+
+impl RuntimeConfig {
+    fn find_user_by_password(&self, password: &str) -> Option<&RuntimeUser> {
+        self.users.iter().find(|user| user.password == password)
+    }
+
+    fn has_user_id(&self, user_id: &str) -> bool {
+        self.users.iter().any(|user| user.user_id == user_id)
+    }
+
+    fn primary_user_id(&self) -> &str {
+        self.users
+            .first()
+            .map(|user| user.user_id.as_str())
+            .unwrap_or("u_legacy")
+    }
+}
+
 fn get_cookie_token(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in raw.split(';') {
@@ -262,11 +325,23 @@ fn get_auth_token(headers: &HeaderMap) -> Option<String> {
     get_cookie_token(headers)
 }
 
-async fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<(), AppError> {
+fn user_scoped_key(user_id: &str, key: &str) -> String {
+    format!("{user_id}:{key}")
+}
+
+fn messages_revision_meta_key(user_id: &str) -> String {
+    user_scoped_key(user_id, MESSAGES_REVISION_KEY)
+}
+
+fn scoped_upload_file_key(user_id: &str, file_key: &str) -> String {
+    format!("{user_id}:{file_key}")
+}
+
+async fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthSession, AppError> {
     let token = get_auth_token(headers).ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "未授权"))?;
-    let ttl = {
+    let cfg = {
         let cfg = state.runtime_config.read().await;
-        cfg.session_ttl_seconds
+        cfg.clone()
     };
     let now = Utc::now().timestamp();
     let mut sessions = state
@@ -274,10 +349,16 @@ async fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<(), AppEr
         .lock()
         .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "会话锁异常"))?;
 
-    match sessions.get(&token).copied() {
-        Some(expire_at) if expire_at > now => {
-            sessions.insert(token, now + ttl);
-            Ok(())
+    match sessions.get(&token).cloned() {
+        Some(record) if record.expire_at > now && cfg.has_user_id(&record.user_id) => {
+            sessions.insert(
+                token.clone(),
+                SessionRecord {
+                    expire_at: now + cfg.session_ttl_seconds,
+                    user_id: record.user_id.clone(),
+                },
+            );
+            Ok(AuthSession { user_id: record.user_id })
         }
         _ => {
             sessions.remove(&token);
@@ -291,11 +372,30 @@ fn open_conn(db_path: &Path) -> Result<Connection, AppError> {
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库打开失败: {e}")))
 }
 
+fn ensure_message_belongs_to_user(conn: &Connection, user_id: &str, message_id: i64) -> Result<(), AppError> {
+    conn.query_row(
+        "SELECT 1 FROM messages WHERE id = ?1 AND user_id = ?2",
+        params![message_id, user_id],
+        |_| Ok(()),
+    )
+    .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))
+}
+
+fn ensure_file_belongs_to_user(conn: &Connection, user_id: &str, file_id: &str) -> Result<(), AppError> {
+    conn.query_row(
+        "SELECT 1 FROM messages WHERE file_id = ?1 AND user_id = ?2",
+        params![file_id, user_id],
+        |_| Ok(()),
+    )
+    .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))
+}
+
 fn init_storage(
     storage_root: &Path,
     files_dir: &Path,
     temp_dir: &Path,
     db_path: &Path,
+    primary_user_id: &str,
 ) -> Result<(), AppError> {
     std::fs::create_dir_all(storage_root)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建存储目录失败: {e}")))?;
@@ -353,10 +453,136 @@ fn init_storage(
             line_number INTEGER NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         ",
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("建表失败: {e}")))?;
+    migrate_user_scoped_storage(&conn, primary_user_id)?;
+    seed_messages_revision(&conn, primary_user_id)?;
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, AppError> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn
+        .prepare(&pragma)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取表结构失败: {e}")))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取表结构失败: {e}")))?;
+    for row in rows {
+        if row.map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取表结构失败: {e}")))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_user_scoped_storage(conn: &Connection, primary_user_id: &str) -> Result<(), AppError> {
+    if !table_has_column(conn, "messages", "user_id")? {
+        conn.execute("ALTER TABLE messages ADD COLUMN user_id TEXT NOT NULL DEFAULT ''", [])
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("迁移 messages.user_id 失败: {e}")))?;
+    }
+    conn.execute(
+        "UPDATE messages SET user_id = ?1 WHERE user_id = '' OR user_id IS NULL",
+        params![primary_user_id],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("迁移消息归属失败: {e}")))?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_user_id_id ON messages(user_id, id)",
+        [],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建消息索引失败: {e}")))?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_user_id_file_id ON messages(user_id, file_id)",
+        [],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建消息文件索引失败: {e}")))?;
+
+    if !table_has_column(conn, "upload_sessions", "user_id")? {
+        conn.execute("ALTER TABLE upload_sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT ''", [])
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("迁移 upload_sessions.user_id 失败: {e}")))?;
+    }
+    conn.execute(
+        "UPDATE upload_sessions SET user_id = ?1 WHERE user_id = '' OR user_id IS NULL",
+        params![primary_user_id],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("迁移上传会话归属失败: {e}")))?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_upload_sessions_user_status ON upload_sessions(user_id, status, updated_at)",
+        [],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建上传会话索引失败: {e}")))?;
+    Ok(())
+}
+
+fn get_meta_value(conn: &Connection, key: &str) -> Result<Option<String>, AppError> {
+    let mut stmt = conn
+        .prepare("SELECT value FROM app_meta WHERE key = ?1")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取元信息失败: {e}")))?;
+    match stmt.query_row(params![key], |row| row.get::<_, String>(0)) {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("读取元信息失败: {e}"),
+        )),
+    }
+}
+
+fn set_meta_value(conn: &Connection, key: &str, value: &str) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO app_meta (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入元信息失败: {e}")))?;
+    Ok(())
+}
+
+fn seed_messages_revision(conn: &Connection, user_id: &str) -> Result<i64, AppError> {
+    let revision_key = messages_revision_meta_key(user_id);
+    if let Some(existing) = get_meta_value(conn, &revision_key)? {
+        return Ok(existing.parse::<i64>().unwrap_or(0).max(0));
+    }
+
+    let revision = conn
+        .query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM messages WHERE user_id = ?1",
+            params![user_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取消息修订号失败: {e}")))?
+        .max(0);
+    set_meta_value(conn, &revision_key, &revision.to_string())?;
+    Ok(revision)
+}
+
+fn bump_messages_revision(conn: &Connection, user_id: &str) -> Result<i64, AppError> {
+    let revision_key = messages_revision_meta_key(user_id);
+    let next = seed_messages_revision(conn, user_id)? + 1;
+    set_meta_value(conn, &revision_key, &next.to_string())?;
+    Ok(next)
+}
+
+fn format_messages_revision_etag(revision: i64) -> String {
+    format!("\"messages-{revision}\"")
+}
+
+fn if_none_match_matches_revision(headers: &HeaderMap, revision: i64) -> bool {
+    let expected = format_messages_revision_etag(revision);
+    let raw = match headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+        Some(value) => value,
+        None => return false,
+    };
+    raw.split(',').map(str::trim).any(|candidate| {
+        candidate == "*"
+            || candidate == expected
+            || candidate.trim_matches('"') == format!("messages-{revision}")
+    })
 }
 
 fn row_to_dto(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageDto> {
@@ -541,9 +767,10 @@ async fn auth(
     Json(payload): Json<AuthRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let cfg = state.runtime_config.read().await.clone();
-    if payload.password != cfg.password {
-        return Err(AppError::new(StatusCode::FORBIDDEN, "密码错误"));
-    }
+    let user = cfg
+        .find_user_by_password(&payload.password)
+        .cloned()
+        .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "密码错误"))?;
 
     let token = create_token();
     let now = Utc::now().timestamp();
@@ -552,7 +779,13 @@ async fn auth(
             .sessions
             .lock()
             .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "会话锁异常"))?;
-        sessions.insert(token.clone(), now + cfg.session_ttl_seconds);
+        sessions.insert(
+            token.clone(),
+            SessionRecord {
+                expire_at: now + cfg.session_ttl_seconds,
+                user_id: user.user_id.clone(),
+            },
+        );
     }
 
     let cookie = format!(
@@ -567,7 +800,13 @@ async fn auth(
             .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Cookie 设置失败"))?,
     );
 
-    Ok((headers, Json(AuthResponse { token })))
+    Ok((
+        headers,
+        Json(AuthResponse {
+            token,
+            user_id: user.user_id,
+        }),
+    ))
 }
 
 async fn logout(
@@ -592,15 +831,31 @@ async fn logout(
 async fn list_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<MessageDto>>, AppError> {
-    require_auth(&headers, &state).await?;
+) -> Result<Response, AppError> {
+    let auth = require_auth(&headers, &state).await?;
 
     let conn = open_conn(&state.db_path)?;
+    let revision = seed_messages_revision(&conn, &auth.user_id)?;
+    let etag = format_messages_revision_etag(revision);
+
+    if if_none_match_matches_revision(&headers, revision) {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        response.headers_mut().insert(
+            header::ETAG,
+            HeaderValue::from_str(&etag)
+                .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "消息修订头生成失败"))?,
+        );
+        return Ok(response);
+    }
+
     let mut stmt = conn
-        .prepare("SELECT * FROM messages ORDER BY id ASC")
+        .prepare(
+            "SELECT id, kind, text_content, created_at, file_id, file_name, file_size, mime_type FROM messages WHERE user_id = ?1 ORDER BY id ASC",
+        )
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
     let rows = stmt
-        .query_map([], row_to_dto)
+        .query_map(params![auth.user_id], row_to_dto)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
 
     let mut out = Vec::new();
@@ -609,21 +864,28 @@ async fn list_messages(
             row.map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("读取行失败: {e}")))?,
         );
     }
-    Ok(Json(out))
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag)
+            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "消息修订头生成失败"))?,
+    );
+    Ok((response_headers, Json(out)).into_response())
 }
 
 async fn get_ui_state(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<UiStateResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let conn = open_conn(&state.db_path)?;
     Ok(Json(UiStateResponse {
-        chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
-        input_height_px: get_ui_state_value(&conn, "input_height_px")?,
-        text_wrap_enabled: get_ui_state_bool(&conn, "text_wrap_enabled")?,
-        text_zoom_scale: get_ui_state_f64(&conn, "text_zoom_scale")?,
+        chat_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"))?,
+        input_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "input_height_px"))?,
+        text_wrap_enabled: get_ui_state_bool(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"))?,
+        text_zoom_scale: get_ui_state_f64(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"))?,
     }))
 }
 
@@ -632,36 +894,36 @@ async fn update_ui_state(
     headers: HeaderMap,
     Json(payload): Json<UiStateUpdateRequest>,
 ) -> Result<Json<UiStateResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let conn = open_conn(&state.db_path)?;
     if let Some(height) = payload.chat_height_px {
         if !(320..=2000).contains(&height) {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "聊天区高度超出范围"));
         }
-        set_ui_state_value(&conn, "chat_height_px", height)?;
+        set_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"), height)?;
     }
     if let Some(height) = payload.input_height_px {
         if !(110..=900).contains(&height) {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "输入框高度超出范围"));
         }
-        set_ui_state_value(&conn, "input_height_px", height)?;
+        set_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "input_height_px"), height)?;
     }
     if let Some(enabled) = payload.text_wrap_enabled {
-        set_ui_state_bool(&conn, "text_wrap_enabled", enabled)?;
+        set_ui_state_bool(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"), enabled)?;
     }
     if let Some(scale) = payload.text_zoom_scale {
         if !scale.is_finite() || scale <= 0.0 {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "文本缩放比例无效"));
         }
-        set_ui_state_f64(&conn, "text_zoom_scale", scale)?;
+        set_ui_state_f64(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"), scale)?;
     }
 
     Ok(Json(UiStateResponse {
-        chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
-        input_height_px: get_ui_state_value(&conn, "input_height_px")?,
-        text_wrap_enabled: get_ui_state_bool(&conn, "text_wrap_enabled")?,
-        text_zoom_scale: get_ui_state_f64(&conn, "text_zoom_scale")?,
+        chat_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"))?,
+        input_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "input_height_px"))?,
+        text_wrap_enabled: get_ui_state_bool(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"))?,
+        text_zoom_scale: get_ui_state_f64(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"))?,
     }))
 }
 
@@ -669,12 +931,12 @@ async fn reset_ui_state(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<UiStateResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
     let conn = open_conn(&state.db_path)?;
-    delete_ui_state_key(&conn, "chat_height_px")?;
-    delete_ui_state_key(&conn, "input_height_px")?;
-    delete_ui_state_key(&conn, "text_wrap_enabled")?;
-    delete_ui_state_key(&conn, "text_zoom_scale")?;
+    delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"))?;
+    delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "input_height_px"))?;
+    delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"))?;
+    delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"))?;
     Ok(Json(UiStateResponse {
         chat_height_px: None,
         input_height_px: None,
@@ -688,9 +950,10 @@ async fn get_video_progress(
     headers: HeaderMap,
     AxumPath(file_id): AxumPath<String>,
 ) -> Result<Json<VideoProgressResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let conn = open_conn(&state.db_path)?;
+    ensure_file_belongs_to_user(&conn, &auth.user_id, &file_id)?;
     let position = conn
         .query_row(
             "SELECT position_seconds FROM video_progress WHERE file_id = ?1",
@@ -710,13 +973,14 @@ async fn update_video_progress(
     AxumPath(file_id): AxumPath<String>,
     Json(payload): Json<VideoProgressRequest>,
 ) -> Result<Json<VideoProgressResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     if !payload.position_seconds.is_finite() || payload.position_seconds < 0.0 {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "播放进度无效"));
     }
 
     let conn = open_conn(&state.db_path)?;
+    ensure_file_belongs_to_user(&conn, &auth.user_id, &file_id)?;
     conn.execute(
         "INSERT INTO video_progress (file_id, position_seconds, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(file_id) DO UPDATE SET position_seconds = excluded.position_seconds, updated_at = excluded.updated_at",
         params![file_id, payload.position_seconds, now_iso()],
@@ -733,9 +997,10 @@ async fn get_text_progress(
     headers: HeaderMap,
     AxumPath(message_id): AxumPath<i64>,
 ) -> Result<Json<TextProgressResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let conn = open_conn(&state.db_path)?;
+    ensure_message_belongs_to_user(&conn, &auth.user_id, message_id)?;
     let line_number = conn
         .query_row(
             "SELECT line_number FROM text_progress WHERE message_id = ?1",
@@ -755,13 +1020,14 @@ async fn update_text_progress(
     AxumPath(message_id): AxumPath<i64>,
     Json(payload): Json<TextProgressRequest>,
 ) -> Result<Json<TextProgressResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     if payload.line_number <= 0 {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "文本行号无效"));
     }
 
     let conn = open_conn(&state.db_path)?;
+    ensure_message_belongs_to_user(&conn, &auth.user_id, message_id)?;
     conn.execute(
         "INSERT INTO text_progress (message_id, line_number, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(message_id) DO UPDATE SET line_number = excluded.line_number, updated_at = excluded.updated_at",
         params![message_id, payload.line_number, now_iso()],
@@ -778,22 +1044,30 @@ async fn create_text_message(
     headers: HeaderMap,
     Json(payload): Json<TextRequest>,
 ) -> Result<Json<MessageDto>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
-    let conn = open_conn(&state.db_path)?;
-    conn.execute(
-        "INSERT INTO messages (kind, text_content, created_at) VALUES (?1, ?2, ?3)",
-        params!["text", payload.text, now_iso()],
+    let mut conn = open_conn(&state.db_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("开启事务失败: {e}")))?;
+    tx.execute(
+        "INSERT INTO messages (user_id, kind, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![auth.user_id, "text", payload.text, now_iso()],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
 
-    let id = conn.last_insert_rowid();
-    let mut stmt = conn
-        .prepare("SELECT * FROM messages WHERE id = ?1")
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
-    let dto = stmt
-        .query_row(params![id], row_to_dto)
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+    let id = tx.last_insert_rowid();
+    bump_messages_revision(&tx, &auth.user_id)?;
+    let dto = {
+        let mut stmt = tx
+            .prepare("SELECT * FROM messages WHERE id = ?1")
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+        stmt.query_row(params![id], row_to_dto)
+            .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?
+    };
+
+    tx.commit()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("提交事务失败: {e}")))?;
 
     Ok(Json(dto))
 }
@@ -803,7 +1077,7 @@ async fn create_file_message(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<MessageDto>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let mut found = false;
     let mut file_id = String::new();
@@ -850,20 +1124,28 @@ async fn create_file_message(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "缺少文件"));
     }
 
-    let conn = open_conn(&state.db_path)?;
-    conn.execute(
-        "INSERT INTO messages (kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params!["file", file_id, file_name, file_size, mime_type, now_iso()],
+    let mut conn = open_conn(&state.db_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("开启事务失败: {e}")))?;
+    tx.execute(
+        "INSERT INTO messages (user_id, kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![auth.user_id, "file", file_id, file_name, file_size, mime_type, now_iso()],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
 
-    let id = conn.last_insert_rowid();
-    let mut stmt = conn
-        .prepare("SELECT * FROM messages WHERE id = ?1")
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
-    let dto = stmt
-        .query_row(params![id], row_to_dto)
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+    let id = tx.last_insert_rowid();
+    bump_messages_revision(&tx, &auth.user_id)?;
+    let dto = {
+        let mut stmt = tx
+            .prepare("SELECT * FROM messages WHERE id = ?1")
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+        stmt.query_row(params![id], row_to_dto)
+            .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?
+    };
+
+    tx.commit()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("提交事务失败: {e}")))?;
 
     Ok(Json(dto))
 }
@@ -873,7 +1155,7 @@ async fn init_upload(
     headers: HeaderMap,
     Json(payload): Json<UploadInitRequest>,
 ) -> Result<Json<UploadInitResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     if payload.file_key.trim().is_empty() {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "file_key 不能为空"));
@@ -888,11 +1170,12 @@ async fn init_upload(
     let chunk_size = 4 * 1024 * 1024;
     let parallel_limit = 4;
     let conn = open_conn(&state.db_path)?;
+    let scoped_file_key = scoped_upload_file_key(&auth.user_id, &payload.file_key);
 
     let existing = conn
         .query_row(
-            "SELECT upload_id, file_name, file_size, mime_type, received_bytes, temp_path, status FROM upload_sessions WHERE file_key = ?1",
-            params![payload.file_key],
+            "SELECT upload_id, file_name, file_size, mime_type, received_bytes, temp_path, status FROM upload_sessions WHERE file_key = ?1 AND user_id = ?2",
+            params![scoped_file_key, auth.user_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -958,7 +1241,7 @@ async fn init_upload(
         "INSERT INTO upload_sessions (upload_id, file_key, file_name, file_size, mime_type, received_bytes, temp_path, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'uploading', ?8, ?8)",
         params![
             upload_id,
-            payload.file_key,
+            scoped_file_key,
             payload.file_name,
             payload.file_size,
             payload.mime_type,
@@ -968,6 +1251,11 @@ async fn init_upload(
         ],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建上传会话失败: {e}")))?;
+    conn.execute(
+        "UPDATE upload_sessions SET user_id = ?1 WHERE upload_id = ?2",
+        params![auth.user_id, upload_id],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入上传归属失败: {e}")))?;
 
     Ok(Json(UploadInitResponse {
         upload_id,
@@ -985,7 +1273,7 @@ async fn upload_chunk(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<UploadChunkResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let upload_id = headers
         .get("x-upload-id")
@@ -1012,8 +1300,8 @@ async fn upload_chunk(
     let conn = open_conn(&state.db_path)?;
     let (file_size, _received_bytes, temp_path, status): (i64, i64, String, String) = conn
         .query_row(
-            "SELECT file_size, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1",
-            params![upload_id],
+            "SELECT file_size, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1 AND user_id = ?2",
+            params![upload_id, auth.user_id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -1115,9 +1403,9 @@ async fn complete_upload(
     headers: HeaderMap,
     Json(payload): Json<UploadCompleteRequest>,
 ) -> Result<Json<MessageDto>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
-    let conn = open_conn(&state.db_path)?;
+    let mut conn = open_conn(&state.db_path)?;
     let (file_name, file_size, mime_type, received_bytes, temp_path, status): (
         String,
         i64,
@@ -1127,8 +1415,8 @@ async fn complete_upload(
         String,
     ) = conn
         .query_row(
-            "SELECT file_name, file_size, mime_type, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1",
-            params![payload.upload_id],
+            "SELECT file_name, file_size, mime_type, received_bytes, temp_path, status FROM upload_sessions WHERE upload_id = ?1 AND user_id = ?2",
+            params![payload.upload_id, auth.user_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1179,9 +1467,14 @@ async fn complete_upload(
         let _ = fs::remove_file(&temp_path).await;
     }
 
-    conn.execute(
-        "INSERT INTO messages (kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("开启事务失败: {e}")))?;
+
+    tx.execute(
+        "INSERT INTO messages (user_id, kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
+            auth.user_id,
             "file",
             file_id,
             file_name,
@@ -1192,25 +1485,31 @@ async fn complete_upload(
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入消息失败: {e}")))?;
 
-    let message_id = conn.last_insert_rowid();
+    let message_id = tx.last_insert_rowid();
 
-    conn.execute(
+    tx.execute(
         "DELETE FROM upload_sessions WHERE upload_id = ?1",
         params![payload.upload_id],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理上传会话失败: {e}")))?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM upload_chunks WHERE upload_id = ?1",
         params![payload.upload_id],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理上传分片失败: {e}")))?;
 
-    let mut stmt = conn
-        .prepare("SELECT * FROM messages WHERE id = ?1")
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
-    let dto = stmt
-        .query_row(params![message_id], row_to_dto)
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+    bump_messages_revision(&tx, &auth.user_id)?;
+
+    let dto = {
+        let mut stmt = tx
+            .prepare("SELECT * FROM messages WHERE id = ?1")
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
+        stmt.query_row(params![message_id], row_to_dto)
+            .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?
+    };
+
+    tx.commit()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("提交事务失败: {e}")))?;
 
     Ok(Json(dto))
 }
@@ -1220,13 +1519,13 @@ async fn cancel_upload(
     headers: HeaderMap,
     Json(payload): Json<UploadCancelRequest>,
 ) -> Result<Json<UploadCancelResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let conn = open_conn(&state.db_path)?;
     let temp_path: Option<String> = conn
         .query_row(
-            "SELECT temp_path FROM upload_sessions WHERE upload_id = ?1",
-            params![payload.upload_id],
+            "SELECT temp_path FROM upload_sessions WHERE upload_id = ?1 AND user_id = ?2",
+            params![payload.upload_id, auth.user_id],
             |row| row.get::<_, String>(0),
         )
         .ok();
@@ -1254,7 +1553,7 @@ async fn delete_messages(
     headers: HeaderMap,
     Json(payload): Json<DeleteRequest>,
 ) -> Result<Json<DeleteResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let auth = require_auth(&headers, &state).await?;
 
     let mut ids: Vec<i64> = payload.ids.into_iter().filter(|v| *v > 0).collect();
     ids.sort_unstable();
@@ -1265,17 +1564,17 @@ async fn delete_messages(
     }
 
     let placeholders = vec!["?"; ids.len()].join(",");
-    let sql_find = format!("SELECT file_id FROM messages WHERE id IN ({placeholders})");
-    let sql_del = format!("DELETE FROM messages WHERE id IN ({placeholders})");
+    let sql_find = format!("SELECT file_id FROM messages WHERE user_id = ?1 AND id IN ({placeholders})");
+    let sql_del = format!("DELETE FROM messages WHERE user_id = ?1 AND id IN ({placeholders})");
 
-    let conn = open_conn(&state.db_path)?;
+    let mut conn = open_conn(&state.db_path)?;
 
     let file_ids: Vec<String> = {
         let mut stmt = conn
             .prepare(&sql_find)
             .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
         let mut rows = stmt
-            .query(rusqlite::params_from_iter(ids.iter().copied()))
+            .query(rusqlite::params_from_iter(std::iter::once(auth.user_id.clone()).chain(ids.iter().map(|id| id.to_string()))))
             .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}")))?;
 
         let mut out = Vec::new();
@@ -1302,21 +1601,29 @@ async fn delete_messages(
         }
     }
 
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("开启事务失败: {e}")))?;
     if !file_ids.is_empty() {
         let progress_placeholders = vec!["?"; file_ids.len()].join(",");
         let progress_sql = format!("DELETE FROM video_progress WHERE file_id IN ({progress_placeholders})");
-        conn.execute(&progress_sql, rusqlite::params_from_iter(file_ids.iter()))
+        tx.execute(&progress_sql, rusqlite::params_from_iter(file_ids.iter()))
             .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理视频进度失败: {e}")))?;
     }
-
     let text_progress_placeholders = vec!["?"; ids.len()].join(",");
     let text_progress_sql = format!("DELETE FROM text_progress WHERE message_id IN ({text_progress_placeholders})");
-    conn.execute(&text_progress_sql, rusqlite::params_from_iter(ids.iter().copied()))
+    tx.execute(&text_progress_sql, rusqlite::params_from_iter(ids.iter().copied()))
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("清理文本进度失败: {e}")))?;
 
-    let deleted = conn
-        .execute(&sql_del, rusqlite::params_from_iter(ids.iter().copied()))
+    let deleted = tx
+        .execute(&sql_del, rusqlite::params_from_iter(std::iter::once(auth.user_id.clone()).chain(ids.iter().map(|id| id.to_string()))))
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
+
+    if deleted > 0 {
+        bump_messages_revision(&tx, &auth.user_id)?;
+    }
+    tx.commit()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("提交事务失败: {e}")))?;
 
     Ok(Json(DeleteResponse { deleted }))
 }
@@ -1327,17 +1634,18 @@ async fn direct_file(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
+    let auth = require_auth(&headers, &state).await?;
     let file_id = path.file_id;
     let _display_name = path.display_name;
 
     let (file_name, mime_type): (String, String) = {
         let conn = open_conn(&state.db_path)?;
         let mut stmt = conn
-            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1")
+            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1 AND user_id = ?2")
             .map_err(|e| {
                 AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}"))
             })?;
-        stmt.query_row(params![file_id], |row| {
+        stmt.query_row(params![file_id, auth.user_id], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?
                     .unwrap_or_else(|| "file".to_string()),
@@ -1419,7 +1727,7 @@ async fn restart_service(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<RestartResponse>, AppError> {
-    require_auth(&headers, &state).await?;
+    let _auth = require_auth(&headers, &state).await?;
 
     if !state.startup_config.allow_web_restart {
         return Err(AppError::new(
@@ -1486,9 +1794,16 @@ async fn run() -> Result<(), AppError> {
     let db_path = storage_root.join("messages.db");
 
     let initial_runtime_config = load_runtime_config(&config_path);
+    let primary_user_id = initial_runtime_config.primary_user_id().to_string();
     let runtime_config = Arc::new(RwLock::new(initial_runtime_config));
 
-    init_storage(&storage_root, &files_dir, &temp_dir, &db_path)?;
+    init_storage(
+        &storage_root,
+        &files_dir,
+        &temp_dir,
+        &db_path,
+        &primary_user_id,
+    )?;
 
     let state = AppState {
         db_path,
@@ -1546,7 +1861,7 @@ async fn run() -> Result<(), AppError> {
 fn load_runtime_config(config_path: &Path) -> RuntimeConfig {
     let file_map = load_config_map(config_path);
 
-    let password = file_map
+    let password_raw = file_map
         .get("FASTFILE_PASSWORD")
         .cloned()
         .or_else(|| env::var("FASTFILE_PASSWORD").ok())
@@ -1564,7 +1879,7 @@ fn load_runtime_config(config_path: &Path) -> RuntimeConfig {
         .unwrap_or(86_400);
 
     RuntimeConfig {
-        password,
+        users: parse_runtime_users(&password_raw),
         session_ttl_seconds,
     }
 }
@@ -1577,4 +1892,93 @@ fn load_config_map(config_path: &Path) -> HashMap<String, String> {
         }
     }
     file_map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_storage_root(name: &str) -> PathBuf {
+        let unique = format!("fastfile-test-{name}-{}", create_token());
+        env::temp_dir().join(unique)
+    }
+
+    #[test]
+    fn init_storage_creates_message_revision_for_empty_database() {
+        let storage_root = temp_storage_root("empty-revision");
+        let files_dir = storage_root.join("files");
+        let temp_dir = storage_root.join("tmp");
+        let db_path = storage_root.join("messages.db");
+
+        init_storage(&storage_root, &files_dir, &temp_dir, &db_path, "u_test").unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let revision: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = ?1",
+                params![messages_revision_meta_key("u_test")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, "0");
+
+        let _ = std::fs::remove_dir_all(storage_root);
+    }
+
+    #[test]
+    fn init_storage_backfills_message_revision_from_existing_messages() {
+        let storage_root = temp_storage_root("existing-revision");
+        std::fs::create_dir_all(&storage_root).unwrap();
+        let files_dir = storage_root.join("files");
+        let temp_dir = storage_root.join("tmp");
+        let db_path = storage_root.join("messages.db");
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                text_content TEXT,
+                file_id TEXT UNIQUE,
+                file_name TEXT,
+                file_size INTEGER,
+                mime_type TEXT,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO messages (kind, text_content, created_at) VALUES ('text', 'first', '2024-01-01T00:00:00Z');
+            INSERT INTO messages (kind, text_content, created_at) VALUES ('text', 'second', '2024-01-01T00:00:01Z');
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        init_storage(&storage_root, &files_dir, &temp_dir, &db_path, "u_test").unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let revision: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = ?1",
+                params![messages_revision_meta_key("u_test")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, "2");
+
+        let user_id: String = conn
+            .query_row("SELECT user_id FROM messages WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_id, "u_test");
+
+        let _ = std::fs::remove_dir_all(storage_root);
+    }
+
+    #[test]
+    fn parse_runtime_users_supports_multiple_passwords() {
+        let users = parse_runtime_users("alpha, beta ,alpha,,gamma");
+        assert_eq!(users.len(), 3);
+        assert_eq!(users[0].password, "alpha");
+        assert_eq!(users[1].password, "beta");
+        assert_eq!(users[2].password, "gamma");
+    }
 }

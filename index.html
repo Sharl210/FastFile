@@ -149,6 +149,17 @@
       cursor: not-allowed;
       box-shadow: none;
     }
+    #plusMenuBtn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      width: 44px;
+      padding: 0;
+      font-size: 20px;
+      line-height: 1;
+      text-align: center;
+    }
     .primary {
       background: var(--accent);
       color: #fff;
@@ -179,19 +190,27 @@
       min-height: 420px;
       max-height: 82vh;
       overflow: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
       padding: 10px;
       background: #f9fbff;
       border: 1px solid #e4ebf5;
       border-radius: 10px;
       resize: vertical;
     }
+    .chat-spacer {
+      height: 0;
+      pointer-events: none;
+    }
+    .chat-virtual-host {
+      min-height: 0;
+    }
     .item {
       display: flex;
       align-items: flex-start;
       gap: 8px;
+      margin-bottom: 10px;
+    }
+    .chat-virtual-host > .item:last-child {
+      margin-bottom: 0;
     }
     .item.self {
       justify-content: flex-end;
@@ -1178,7 +1197,7 @@
       </div>
       <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
         <div style="position:relative;">
-          <button id="plusMenuBtn" title="上传菜单">＋</button>
+          <button id="plusMenuBtn" title="上传菜单">+</button>
           <div id="plusMenu" class="panel hidden" style="position:absolute; bottom:42px; left:0; min-width:180px; z-index:70; padding:8px;">
             <button id="pickImageBtn" style="width:100%; text-align:left; margin-bottom:6px;">图片上传</button>
             <button id="pickVideoBtn" style="width:100%; text-align:left; margin-bottom:6px;">视频上传</button>
@@ -1266,6 +1285,7 @@
     const scrollBottomBtn = document.getElementById('scrollBottomBtn');
 
     let token = '';
+    let activeUserId = '';
     let allMessages = [];
     let manageMode = false;
     let currentFilter = 'all';
@@ -1288,11 +1308,15 @@
     let mediaList = [];
     let mediaIndex = -1;
     let currentViewerMode = 'media';
-    let lastAppliedSnapshot = '';
+    let lastAppliedRevision = '';
     let pendingMessages = null;
-    let pendingSnapshot = '';
+    let pendingRevision = '';
     let pollingInFlight = false;
+    let messageRequestSeq = 0;
+    let latestHandledMessageRequestSeq = 0;
     let scrollAnimationFrame = 0;
+    let chatViewportRaf = 0;
+    let chatViewportForcedMessageId = null;
     const selfMessageIds = new Set();
     const mediaProgressCache = new Map();
     const textProgressCache = new Map();
@@ -1303,6 +1327,7 @@
     let activeAudioShellCleanup = null;
     let activeTextViewerState = null;
     let activeEditorState = null;
+    let chatVirtualState = null;
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
@@ -1319,9 +1344,14 @@
     const TEXT_VIEWER_WRAP_BLOCK_LINES = 28;
     const TEXT_VIEWER_NOWRAP_BLOCK_LINES = 40;
     const TEXT_VIEWER_OVERSCAN = 2;
+    const CHAT_ITEM_GAP = 10;
+    const CHAT_VIRTUALIZE_THRESHOLD = 20;
+    const CHAT_VIRTUAL_OVERSCAN = 1.2;
     const INPUT_VIRTUALIZE_THRESHOLD = 2000;
     const INPUT_LINE_HEIGHT = 21;
     const INPUT_OVERSCAN_LINES = 18;
+    const LARGE_PASTE_THRESHOLD = 120000;
+    const LARGE_PASTE_CHUNK_SIZE = 24000;
 
     function formatBytes(bytes) {
       const n = Number(bytes || 0);
@@ -1356,17 +1386,193 @@
       return map[status] || status;
     }
 
-    function snapshotMessages(messages) {
-      return JSON.stringify((messages || []).map((m) => [
-        m.id,
-        m.kind,
-        m.text,
-        m.created_at,
-        m.file_id,
-        m.file_name,
-        m.file_size,
-        m.mime_type,
-      ]));
+    function getMessageRevisionHeader(res) {
+      return res.headers.get('etag') || '';
+    }
+
+    function ensureChatVirtualState() {
+      if (chatVirtualState) return chatVirtualState;
+      const topSpacer = document.createElement('div');
+      topSpacer.className = 'chat-spacer';
+      const host = document.createElement('div');
+      host.className = 'chat-virtual-host';
+      const bottomSpacer = document.createElement('div');
+      bottomSpacer.className = 'chat-spacer';
+      chat.replaceChildren(topSpacer, host, bottomSpacer);
+      chatVirtualState = {
+        topSpacer,
+        host,
+        bottomSpacer,
+        heights: new Map(),
+        start: 0,
+        end: 0,
+        shouldVirtualize: false,
+      };
+      return chatVirtualState;
+    }
+
+    function scheduleChatViewportRender(forceMessageId = null) {
+      if (forceMessageId != null) {
+        chatViewportForcedMessageId = forceMessageId;
+      }
+      if (chatViewportRaf) return;
+      chatViewportRaf = requestAnimationFrame(() => {
+        chatViewportRaf = 0;
+        const nextForcedId = chatViewportForcedMessageId;
+        chatViewportForcedMessageId = null;
+        renderChatViewport({ forceMessageId: nextForcedId });
+      });
+    }
+
+    function trimChatHeightCache(messages) {
+      const state = ensureChatVirtualState();
+      const liveIds = new Set(messages.map((msg) => msg.id));
+      Array.from(state.heights.keys()).forEach((messageId) => {
+        if (!liveIds.has(messageId)) {
+          state.heights.delete(messageId);
+        }
+      });
+    }
+
+    function estimateChatMessageHeight(msg) {
+      const chatWidth = Math.max(320, chat.clientWidth || 640);
+      const bubbleWidth = Math.max(220, Math.min(820, chatWidth - (manageMode ? 96 : 56)));
+      const baseHeight = manageMode ? 90 : 68;
+      if (msg.kind === 'text') {
+        const textValue = msg.text || '';
+        const textPreview = getTextPreview(textValue);
+        const previewText = textPreview.truncated ? `${textPreview.preview}...` : textValue;
+        const charsPerLine = Math.max(18, Math.floor(bubbleWidth / 7.2));
+        const logicalLines = String(previewText || '').split('\n').reduce((sum, line) => {
+          return sum + Math.max(1, Math.ceil(Math.max(line.length, 1) / charsPerLine));
+        }, 0);
+        return baseHeight + logicalLines * 24 + (textPreview.truncated ? 42 : 0) + CHAT_ITEM_GAP;
+      }
+      const mimeType = msg.mime_type || '';
+      if (mimeType.startsWith('image/')) return baseHeight + Math.min(360, bubbleWidth * 0.72) + CHAT_ITEM_GAP;
+      if (mimeType.startsWith('video/')) return baseHeight + 230 + CHAT_ITEM_GAP;
+      if (mimeType.startsWith('audio/')) return baseHeight + 176 + CHAT_ITEM_GAP;
+      return baseHeight + 54 + CHAT_ITEM_GAP;
+    }
+
+    function getChatMessageHeight(msg) {
+      const state = ensureChatVirtualState();
+      return state.heights.get(msg.id) || estimateChatMessageHeight(msg);
+    }
+
+    function getChatOffsetForIndex(messages, targetIndex) {
+      let offset = 0;
+      for (let i = 0; i < targetIndex; i += 1) {
+        offset += getChatMessageHeight(messages[i]);
+      }
+      return offset;
+    }
+
+    function computeChatViewport(messages, forceMessageId = null) {
+      const totalHeight = messages.reduce((sum, msg) => sum + getChatMessageHeight(msg), 0);
+      const shouldVirtualize = messages.length >= CHAT_VIRTUALIZE_THRESHOLD;
+      if (!shouldVirtualize) {
+        return {
+          shouldVirtualize,
+          totalHeight,
+          start: 0,
+          end: messages.length,
+          topHeight: 0,
+          bottomHeight: 0,
+        };
+      }
+
+      const overscanPx = chat.clientHeight * CHAT_VIRTUAL_OVERSCAN;
+      const startBoundary = Math.max(0, chat.scrollTop - overscanPx);
+      const endBoundary = chat.scrollTop + chat.clientHeight + overscanPx;
+
+      let start = 0;
+      let topHeight = 0;
+      while (start < messages.length) {
+        const nextHeight = getChatMessageHeight(messages[start]);
+        if (topHeight + nextHeight >= startBoundary) break;
+        topHeight += nextHeight;
+        start += 1;
+      }
+
+      let end = start;
+      let renderedBottom = topHeight;
+      while (end < messages.length && renderedBottom < endBoundary) {
+        renderedBottom += getChatMessageHeight(messages[end]);
+        end += 1;
+      }
+      if (end === start && end < messages.length) {
+        renderedBottom += getChatMessageHeight(messages[end]);
+        end += 1;
+      }
+
+      if (forceMessageId != null) {
+        const forcedIndex = messages.findIndex((msg) => msg.id === forceMessageId);
+        if (forcedIndex >= 0 && (forcedIndex < start || forcedIndex >= end)) {
+          start = forcedIndex;
+          topHeight = getChatOffsetForIndex(messages, forcedIndex);
+          end = forcedIndex + 1;
+          renderedBottom = topHeight + getChatMessageHeight(messages[forcedIndex]);
+          while (end < messages.length && renderedBottom < endBoundary) {
+            renderedBottom += getChatMessageHeight(messages[end]);
+            end += 1;
+          }
+        }
+      }
+
+      const renderedHeight = Math.max(0, renderedBottom - topHeight);
+      return {
+        shouldVirtualize,
+        totalHeight,
+        start,
+        end,
+        topHeight,
+        bottomHeight: Math.max(0, totalHeight - topHeight - renderedHeight),
+      };
+    }
+
+    function renderChatViewport({ forceMessageId = null } = {}) {
+      const state = ensureChatVirtualState();
+      const visible = getVisibleMessages();
+      trimChatHeightCache(visible);
+
+      if (!visible.length) {
+        state.topSpacer.style.height = '0px';
+        state.bottomSpacer.style.height = '0px';
+        state.host.replaceChildren();
+        state.start = 0;
+        state.end = 0;
+        state.shouldVirtualize = false;
+        return;
+      }
+
+      const viewport = computeChatViewport(visible, forceMessageId);
+      state.shouldVirtualize = viewport.shouldVirtualize;
+      state.start = viewport.start;
+      state.end = viewport.end;
+      state.topSpacer.style.height = viewport.shouldVirtualize ? `${viewport.topHeight}px` : '0px';
+      state.bottomSpacer.style.height = viewport.shouldVirtualize ? `${viewport.bottomHeight}px` : '0px';
+
+      const fragment = document.createDocumentFragment();
+      for (let i = viewport.start; i < viewport.end; i += 1) {
+        fragment.appendChild(renderMessage(visible[i]));
+      }
+      state.host.replaceChildren(fragment);
+
+      let measuredChanged = false;
+      Array.from(state.host.children).forEach((row, offset) => {
+        const msg = visible[viewport.start + offset];
+        const isLast = viewport.start + offset >= visible.length - 1;
+        const measuredHeight = Math.ceil(row.getBoundingClientRect().height) + (isLast ? 0 : CHAT_ITEM_GAP);
+        if (measuredHeight > 0 && Math.abs(measuredHeight - getChatMessageHeight(msg)) > 1) {
+          state.heights.set(msg.id, measuredHeight);
+          measuredChanged = true;
+        }
+      });
+
+      if (measuredChanged) {
+        scheduleChatViewportRender(forceMessageId);
+      }
     }
 
     function getBubbleVariant(msg) {
@@ -1383,7 +1589,7 @@
     function loadSelfMessageIds() {
       selfMessageIds.clear();
       try {
-        const raw = sessionStorage.getItem(SELF_MESSAGE_IDS_KEY);
+        const raw = sessionStorage.getItem(`${SELF_MESSAGE_IDS_KEY}.${activeUserId || 'guest'}`);
         const ids = JSON.parse(raw || '[]');
         ids.forEach((id) => {
           selfMessageIds.add(Number(id));
@@ -1393,7 +1599,7 @@
 
     function saveSelfMessageIds() {
       try {
-        sessionStorage.setItem(SELF_MESSAGE_IDS_KEY, JSON.stringify(Array.from(selfMessageIds)));
+        sessionStorage.setItem(`${SELF_MESSAGE_IDS_KEY}.${activeUserId || 'guest'}`, JSON.stringify(Array.from(selfMessageIds)));
       } catch (_) {}
     }
 
@@ -1667,6 +1873,66 @@
         content: inputVirtualContent,
         alwaysMirror: false,
       }, { force: Boolean(activeEditorState) });
+    }
+
+    function shouldChunkLargePaste(text) {
+      return String(text || '').length >= LARGE_PASTE_THRESHOLD;
+    }
+
+    async function insertLargeTextInChunks(textarea, text, { onChunk = null, start = null, end = null } = {}) {
+      const initialValue = textarea.value || '';
+      const safeStart = Number.isFinite(start) ? start : (textarea.selectionStart ?? initialValue.length);
+      const safeEnd = Number.isFinite(end) ? end : (textarea.selectionEnd ?? initialValue.length);
+      const before = initialValue.slice(0, safeStart);
+      const after = initialValue.slice(safeEnd);
+      let inserted = 0;
+      textarea.value = before;
+      while (inserted < text.length) {
+        const chunk = text.slice(inserted, inserted + LARGE_PASTE_CHUNK_SIZE);
+        textarea.value += chunk;
+        inserted += chunk.length;
+        const caret = before.length + inserted;
+        textarea.setSelectionRange(caret, caret);
+        if (typeof onChunk === 'function') {
+          onChunk(inserted, text.length);
+        }
+        if (inserted < text.length) {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+      }
+      textarea.value += after;
+      const finalCaret = before.length + text.length;
+      textarea.setSelectionRange(finalCaret, finalCaret);
+    }
+
+    function handleLargeTextPaste(event, textarea, { onChunk = null } = {}) {
+      if (!textarea || textarea.dataset.largePasteBusy === '1') {
+        event.preventDefault();
+        return true;
+      }
+      const pastedText = event.clipboardData?.getData('text/plain') || '';
+      if (!shouldChunkLargePaste(pastedText)) {
+        return false;
+      }
+
+      event.preventDefault();
+      const start = textarea.selectionStart ?? textarea.value.length;
+      const end = textarea.selectionEnd ?? textarea.value.length;
+      const previousReadOnly = textarea.readOnly;
+      textarea.dataset.largePasteBusy = '1';
+      textarea.style.cursor = 'progress';
+      textarea.readOnly = true;
+      insertLargeTextInChunks(textarea, pastedText, { onChunk, start, end })
+        .catch((err) => alert(err?.message || '大文本粘贴失败'))
+        .finally(() => {
+          delete textarea.dataset.largePasteBusy;
+          textarea.style.cursor = '';
+          textarea.readOnly = previousReadOnly;
+          if (typeof onChunk === 'function') {
+            onChunk(pastedText.length, pastedText.length);
+          }
+        });
+      return true;
     }
 
     function getTextPreview(text) {
@@ -2582,6 +2848,9 @@
       textarea.setAttribute('autocorrect', 'off');
       textarea.setAttribute('autocomplete', 'off');
       textarea.setAttribute('autocapitalize', 'off');
+      textarea.addEventListener('paste', (event) => {
+        handleLargeTextPaste(event, textarea);
+      });
       stage.appendChild(textarea);
       mediaStage.appendChild(stage);
       activeEditorState = { textarea, resizeObserver: null };
@@ -2874,12 +3143,14 @@
       if (!anchor) return;
       if (anchor.messageId == null) {
         chat.scrollTop = Math.min(anchor.scrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+        renderChatViewport();
         updateScrollButtonState();
         return;
       }
       const anchorRow = chat.querySelector(`.item[data-message-id="${anchor.messageId}"]`);
       if (!anchorRow) {
         chat.scrollTop = Math.min(anchor.scrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+        renderChatViewport({ forceMessageId: anchor.messageId });
         updateScrollButtonState();
         return;
       }
@@ -2887,6 +3158,7 @@
       const nextOffset = anchorRow.getBoundingClientRect().top - chatRect.top;
       const nextScrollTop = chat.scrollTop + (nextOffset - anchor.offset);
       chat.scrollTop = Math.max(0, Math.min(nextScrollTop, chat.scrollHeight - chat.clientHeight));
+      renderChatViewport({ forceMessageId: anchor.messageId });
       updateScrollButtonState();
     }
 
@@ -3072,54 +3344,41 @@
     }
 
     function renderMessages({ followBottom = false, preserveScroll = true } = {}) {
-      const visible = getVisibleMessages();
+      ensureChatVirtualState();
       const previousScrollTop = chat.scrollTop;
-      const existingRows = new Map(
-        Array.from(chat.querySelectorAll('.item[data-message-id]')).map((row) => [Number(row.dataset.messageId), row])
-      );
+      renderChatViewport();
 
-      for (const msg of visible) {
-        const freshRow = renderMessage(msg);
-        const currentRow = existingRows.get(msg.id);
-        if (!currentRow) {
-          chat.appendChild(freshRow);
-          continue;
+      if (followBottom) {
+        chat.scrollTop = Math.max(0, chat.scrollHeight - chat.clientHeight);
+        renderChatViewport();
+      } else if (preserveScroll) {
+        const nextScrollTop = Math.min(previousScrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
+        if (Math.abs(nextScrollTop - chat.scrollTop) > 1) {
+          chat.scrollTop = nextScrollTop;
+          renderChatViewport();
         }
-
-        if (currentRow.outerHTML !== freshRow.outerHTML) {
-          currentRow.replaceWith(freshRow);
-        }
-      }
-
-      const visibleIds = visible.map((m) => m.id);
-      for (const [id, row] of existingRows.entries()) {
-        if (!visibleIds.includes(id)) {
-          row.remove();
-        }
-      }
-
-      const orderedRows = visible.map((m) => chat.querySelector(`.item[data-message-id="${m.id}"]`)).filter(Boolean);
-      orderedRows.forEach((row) => {
-        chat.appendChild(row);
-      });
-
-      if (manageMode) {
-        orderedRows.forEach((row) => {
-          const checkbox = row.querySelector('input[type="checkbox"]');
-          if (checkbox) {
-            checkbox.checked = selectedIds.has(Number(row.dataset.messageId));
-          }
-        });
       }
 
       syncMediaHistoryContext(false);
+      updateScrollButtonState();
+    }
 
-      if (followBottom) {
-        chat.scrollTop = chat.scrollHeight;
-      } else if (preserveScroll) {
-        chat.scrollTop = Math.min(previousScrollTop, Math.max(0, chat.scrollHeight - chat.clientHeight));
-      }
-
+    function scrollChatToMessageId(messageId) {
+      if (messageId == null) return;
+      const visible = getVisibleMessages();
+      const targetIndex = visible.findIndex((msg) => msg.id === messageId);
+      if (targetIndex < 0) return;
+      const targetTop = getChatOffsetForIndex(visible, targetIndex);
+      const targetHeight = getChatMessageHeight(visible[targetIndex]);
+      const nextScrollTop = Math.max(
+        0,
+        Math.min(
+          targetTop - Math.max(0, (chat.clientHeight - targetHeight) / 2),
+          Math.max(0, chat.scrollHeight - chat.clientHeight)
+        )
+      );
+      chat.scrollTop = nextScrollTop;
+      renderChatViewport({ forceMessageId: messageId });
       updateScrollButtonState();
     }
 
@@ -3148,10 +3407,7 @@
       });
 
       if (!shouldScroll || currentMessageId == null) return;
-      const activeRow = chat.querySelector(`.item[data-message-id="${currentMessageId}"]`);
-      if (activeRow) {
-        activeRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      }
+      scrollChatToMessageId(currentMessageId);
     }
 
     async function showMediaAt(index) {
@@ -3327,6 +3583,7 @@
 
     function updateManageUi() {
       const scrollAnchor = captureChatScrollAnchor();
+      ensureChatVirtualState().heights.clear();
       suppressUiResizeSave = true;
       appPage.classList.toggle('manage-mode', manageMode);
       normalActions.classList.toggle('hidden', manageMode);
@@ -3357,16 +3614,16 @@
       });
     }
 
-    function applyMessages(messages, { followBottom = false, preserveScroll = true } = {}) {
+    function applyMessages(messages, { followBottom = false, preserveScroll = true, revision = '' } = {}) {
       allMessages = messages;
       buildMediaList(!mediaViewer.classList.contains('hidden') ? currentViewerMode : 'media');
       if (mediaIndex >= 0) {
         const currentMessageId = getCurrentMediaMessageId();
         mediaIndex = currentMessageId == null ? -1 : mediaList.findIndex((m) => m.id === currentMessageId);
       }
-      lastAppliedSnapshot = snapshotMessages(messages);
+      lastAppliedRevision = revision;
       pendingMessages = null;
-      pendingSnapshot = '';
+      pendingRevision = '';
       updateRefreshButtonState();
       renderMessages({ followBottom, preserveScroll });
     }
@@ -3374,25 +3631,60 @@
     function flushPendingMessages({ followBottom = false } = {}) {
       if (!pendingMessages) return false;
       const queued = pendingMessages;
-      applyMessages(queued, { followBottom, preserveScroll: !followBottom });
+      const revision = pendingRevision;
+      applyMessages(queued, { followBottom, preserveScroll: !followBottom, revision });
       return true;
     }
 
     async function loadMessages({ source = 'poll', followBottom = false, preserveScroll = true } = {}) {
-      const incoming = await api('/api/messages');
-      const incomingSnapshot = snapshotMessages(incoming);
-      if (incomingSnapshot === pendingSnapshot || incomingSnapshot === lastAppliedSnapshot) {
+      const requestSeq = ++messageRequestSeq;
+      const headers = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const knownRevision = pendingRevision || lastAppliedRevision;
+      if (knownRevision) headers['If-None-Match'] = knownRevision;
+
+      const res = await fetch('/api/messages', { headers });
+      if (requestSeq < latestHandledMessageRequestSeq) {
+        return;
+      }
+      if (res.status === 304) {
+        latestHandledMessageRequestSeq = Math.max(latestHandledMessageRequestSeq, requestSeq);
+        return;
+      }
+      if (res.status === 401) {
+        token = '';
+        loginMask.classList.remove('hidden');
+        throw new Error('未授权');
+      }
+      if (!res.ok) {
+        let msg = `请求失败: ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j.error) msg = j.error;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+
+      const incoming = await res.json();
+      const incomingRevision = getMessageRevisionHeader(res);
+      if (requestSeq < latestHandledMessageRequestSeq) {
+        return;
+      }
+      if (incomingRevision && (incomingRevision === pendingRevision || incomingRevision === lastAppliedRevision)) {
+        latestHandledMessageRequestSeq = Math.max(latestHandledMessageRequestSeq, requestSeq);
         return;
       }
 
       if (source === 'poll' && shouldDeferMessageRender()) {
+        latestHandledMessageRequestSeq = Math.max(latestHandledMessageRequestSeq, requestSeq);
         pendingMessages = incoming;
-        pendingSnapshot = incomingSnapshot;
+        pendingRevision = incomingRevision;
         updateRefreshButtonState();
         return;
       }
 
-      applyMessages(incoming, { followBottom, preserveScroll });
+      latestHandledMessageRequestSeq = Math.max(latestHandledMessageRequestSeq, requestSeq);
+      applyMessages(incoming, { followBottom, preserveScroll, revision: incomingRevision });
     }
 
     async function login() {
@@ -3404,6 +3696,7 @@
           body: JSON.stringify({ password: passwordInput.value })
         });
         token = data.token;
+        activeUserId = data.user_id || '';
         try {
           if (rememberPassword.checked) {
             localStorage.setItem(REMEMBER_PASSWORD_KEY, passwordInput.value);
@@ -3446,17 +3739,20 @@
       try {
         await api('/api/logout', { method: 'POST' });
       } catch (_) {}
-      token = '';
-      selectedIds.clear();
-      manageMode = false;
       selfMessageIds.clear();
       saveSelfMessageIds();
+      token = '';
+      activeUserId = '';
+      selectedIds.clear();
+      manageMode = false;
       mediaProgressCache.clear();
       mediaCompatibilityCache.clear();
       audioVisualCache.clear();
       pendingMessages = null;
-      pendingSnapshot = '';
-      lastAppliedSnapshot = '';
+      pendingRevision = '';
+      lastAppliedRevision = '';
+      latestHandledMessageRequestSeq = 0;
+      messageRequestSeq = 0;
       resetLogoutButton();
       resetRestartButton();
       updateRefreshButtonState();
@@ -4056,11 +4352,19 @@
       if (images.length) {
         e.preventDefault();
         enqueueFiles(images).catch((err) => alert(err.message));
+        return;
+      }
+      if (handleLargeTextPaste(e, textInput, {
+        onChunk: () => requestAnimationFrame(syncInputVirtualization),
+      })) {
+        requestAnimationFrame(syncInputVirtualization);
+        return;
       }
       requestAnimationFrame(syncInputVirtualization);
     });
 
     chat.addEventListener('scroll', () => {
+      scheduleChatViewportRender();
       updateScrollButtonState();
       if (pendingMessages && isChatNearBottom()) {
         flushPendingMessages({ followBottom: true });
@@ -4085,6 +4389,7 @@
     const resizeObserver = new ResizeObserver(() => {
       scheduleUiStateSave();
       updateScrollButtonState();
+      scheduleChatViewportRender();
       syncInputVirtualization();
       updateResetSizeButtonState();
     });
