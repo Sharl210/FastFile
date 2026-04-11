@@ -368,8 +368,15 @@ async fn require_auth(headers: &HeaderMap, state: &AppState) -> Result<AuthSessi
 }
 
 fn open_conn(db_path: &Path) -> Result<Connection, AppError> {
-    Connection::open(db_path)
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库打开失败: {e}")))
+    let conn = Connection::open(db_path)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库打开失败: {e}")))?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库等待超时设置失败: {e}")))?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库 WAL 设置失败: {e}")))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("数据库同步级别设置失败: {e}")))?;
+    Ok(conn)
 }
 
 fn ensure_message_belongs_to_user(conn: &Connection, user_id: &str, message_id: i64) -> Result<(), AppError> {
@@ -1238,9 +1245,10 @@ async fn init_upload(
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时文件失败: {e}")))?;
 
     conn.execute(
-        "INSERT INTO upload_sessions (upload_id, file_key, file_name, file_size, mime_type, received_bytes, temp_path, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'uploading', ?8, ?8)",
+        "INSERT INTO upload_sessions (upload_id, user_id, file_key, file_name, file_size, mime_type, received_bytes, temp_path, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'uploading', ?9, ?9)",
         params![
             upload_id,
+            auth.user_id,
             scoped_file_key,
             payload.file_name,
             payload.file_size,
@@ -1251,11 +1259,6 @@ async fn init_upload(
         ],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建上传会话失败: {e}")))?;
-    conn.execute(
-        "UPDATE upload_sessions SET user_id = ?1 WHERE upload_id = ?2",
-        params![auth.user_id, upload_id],
-    )
-    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入上传归属失败: {e}")))?;
 
     Ok(Json(UploadInitResponse {
         upload_id,
@@ -1321,40 +1324,6 @@ async fn upload_chunk(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "分片超出文件总大小"));
     }
 
-    let existing_same: Option<(i64, i64, String)> = conn
-        .query_row(
-            "SELECT start_byte, end_byte, checksum_hex FROM upload_chunks WHERE upload_id = ?1 AND start_byte = ?2",
-            params![upload_id, start_byte],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .ok();
-
-    if let Some((_, existing_end, existing_checksum)) = existing_same {
-        if existing_end != end_byte || existing_checksum != checksum {
-            return Err(AppError::new(StatusCode::CONFLICT, "分片校验不匹配"));
-        }
-        let parts = load_uploaded_parts(&conn, &upload_id)?;
-        let uploaded = total_uploaded_bytes(&parts);
-        return Ok(Json(UploadChunkResponse {
-            upload_id,
-            received_bytes: uploaded,
-            total_bytes: file_size,
-            done: uploaded >= file_size,
-        }));
-    }
-
-    let overlap_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(1) FROM upload_chunks WHERE upload_id = ?1 AND start_byte < ?3 AND end_byte > ?2",
-            params![upload_id, start_byte, end_byte],
-            |row| row.get(0),
-        )
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询分片冲突失败: {e}")))?;
-
-    if overlap_count > 0 {
-        return Err(AppError::new(StatusCode::CONFLICT, "分片范围与已有数据重叠"));
-    }
-
     let actual_checksum = sha256_hex(&body);
     if actual_checksum != checksum {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "分片校验失败"));
@@ -1374,21 +1343,72 @@ async fn upload_chunk(
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入分片失败: {e}")))?;
 
-    conn.execute(
+    let mut conn = open_conn(&state.db_path)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("开启事务失败: {e}")))?;
+
+    let existing_same: Option<(i64, i64, String)> = tx
+        .query_row(
+            "SELECT start_byte, end_byte, checksum_hex FROM upload_chunks WHERE upload_id = ?1 AND start_byte = ?2",
+            params![upload_id, start_byte],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+
+    if let Some((_, existing_end, existing_checksum)) = existing_same {
+        if existing_end != end_byte || existing_checksum != checksum {
+            return Err(AppError::new(StatusCode::CONFLICT, "分片校验不匹配"));
+        }
+        let uploaded: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(end_byte - start_byte), 0) FROM upload_chunks WHERE upload_id = ?1",
+                params![upload_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("统计上传进度失败: {e}")))?;
+        return Ok(Json(UploadChunkResponse {
+            upload_id,
+            received_bytes: uploaded,
+            total_bytes: file_size,
+            done: uploaded >= file_size,
+        }));
+    }
+
+    let overlap_count: i64 = tx
+        .query_row(
+            "SELECT COUNT(1) FROM upload_chunks WHERE upload_id = ?1 AND start_byte < ?3 AND end_byte > ?2",
+            params![upload_id, start_byte, end_byte],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询分片冲突失败: {e}")))?;
+
+    if overlap_count > 0 {
+        return Err(AppError::new(StatusCode::CONFLICT, "分片范围与已有数据重叠"));
+    }
+
+    tx.execute(
         "INSERT INTO upload_chunks (upload_id, start_byte, end_byte, chunk_size, checksum_hex, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![upload_id, start_byte, end_byte, incoming, checksum, now_iso()],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("记录分片失败: {e}")))?;
 
-    let parts = load_uploaded_parts(&conn, &upload_id)?;
-    let new_received = total_uploaded_bytes(&parts);
+    let new_received: i64 = tx
+        .query_row(
+            "SELECT COALESCE(SUM(end_byte - start_byte), 0) FROM upload_chunks WHERE upload_id = ?1",
+            params![upload_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("统计上传进度失败: {e}")))?;
     let done = new_received >= file_size;
 
-    conn.execute(
+    tx.execute(
         "UPDATE upload_sessions SET received_bytes = ?1, updated_at = ?2 WHERE upload_id = ?3",
         params![new_received, now_iso(), upload_id],
     )
     .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("更新上传进度失败: {e}")))?;
+    tx.commit()
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("提交事务失败: {e}")))?;
 
     Ok(Json(UploadChunkResponse {
         upload_id,
