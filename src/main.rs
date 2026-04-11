@@ -148,6 +148,7 @@ struct UiStateUpdateRequest {
     chat_height_px: Option<i64>,
     input_height_px: Option<i64>,
     text_wrap_enabled: Option<bool>,
+    text_zoom_scale: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -155,6 +156,7 @@ struct UiStateResponse {
     chat_height_px: Option<i64>,
     input_height_px: Option<i64>,
     text_wrap_enabled: Option<bool>,
+    text_zoom_scale: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -473,6 +475,26 @@ fn set_ui_state_bool(conn: &Connection, key: &str, value: bool) -> Result<(), Ap
     set_ui_state_value(conn, key, if value { 1 } else { 0 })
 }
 
+fn get_ui_state_f64(conn: &Connection, key: &str) -> Result<Option<f64>, AppError> {
+    let value = conn
+        .query_row(
+            "SELECT value FROM ui_state WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    Ok(value.and_then(|v| v.parse::<f64>().ok()))
+}
+
+fn set_ui_state_f64(conn: &Connection, key: &str, value: f64) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO ui_state (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value.to_string(), now_iso()],
+    )
+    .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("保存界面状态失败: {e}")))?;
+    Ok(())
+}
+
 fn delete_ui_state_key(conn: &Connection, key: &str) -> Result<(), AppError> {
     conn.execute("DELETE FROM ui_state WHERE key = ?1", params![key])
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("重置界面状态失败: {e}")))?;
@@ -586,6 +608,7 @@ async fn get_ui_state(
         chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
         input_height_px: get_ui_state_value(&conn, "input_height_px")?,
         text_wrap_enabled: get_ui_state_bool(&conn, "text_wrap_enabled")?,
+        text_zoom_scale: get_ui_state_f64(&conn, "text_zoom_scale")?,
     }))
 }
 
@@ -612,11 +635,18 @@ async fn update_ui_state(
     if let Some(enabled) = payload.text_wrap_enabled {
         set_ui_state_bool(&conn, "text_wrap_enabled", enabled)?;
     }
+    if let Some(scale) = payload.text_zoom_scale {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "文本缩放比例无效"));
+        }
+        set_ui_state_f64(&conn, "text_zoom_scale", scale)?;
+    }
 
     Ok(Json(UiStateResponse {
         chat_height_px: get_ui_state_value(&conn, "chat_height_px")?,
         input_height_px: get_ui_state_value(&conn, "input_height_px")?,
         text_wrap_enabled: get_ui_state_bool(&conn, "text_wrap_enabled")?,
+        text_zoom_scale: get_ui_state_f64(&conn, "text_zoom_scale")?,
     }))
 }
 
@@ -629,10 +659,12 @@ async fn reset_ui_state(
     delete_ui_state_key(&conn, "chat_height_px")?;
     delete_ui_state_key(&conn, "input_height_px")?;
     delete_ui_state_key(&conn, "text_wrap_enabled")?;
+    delete_ui_state_key(&conn, "text_zoom_scale")?;
     Ok(Json(UiStateResponse {
         chat_height_px: None,
         input_height_px: None,
         text_wrap_enabled: None,
+        text_zoom_scale: None,
     }))
 }
 

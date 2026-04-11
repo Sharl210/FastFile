@@ -1088,6 +1088,7 @@
     const DEFAULT_INPUT_HEIGHT = '110px';
     let mediaList = [];
     let mediaIndex = -1;
+    let currentViewerMode = 'media';
     let lastAppliedSnapshot = '';
     let pendingMessages = null;
     let pendingSnapshot = '';
@@ -1104,6 +1105,7 @@
     let uiStateSaveTimer = 0;
     let suppressUiResizeSave = false;
     let videoProgressSaveTimer = 0;
+    let textViewerZoomSaveTimer = 0;
     let textWrapEnabled = true;
     let textViewerZoom = 1;
 
@@ -1223,11 +1225,12 @@
       scrollBottomBtn.disabled = isChatNearBottom();
     }
 
-    function applyUiState({ chat_height_px, input_height_px, text_wrap_enabled }) {
+    function applyUiState({ chat_height_px, input_height_px, text_wrap_enabled, text_zoom_scale }) {
       suppressUiResizeSave = true;
       chat.style.height = chat_height_px ? `${chat_height_px}px` : DEFAULT_CHAT_HEIGHT;
       textInput.style.height = input_height_px ? `${input_height_px}px` : DEFAULT_INPUT_HEIGHT;
       textWrapEnabled = text_wrap_enabled !== false;
+      textViewerZoom = Number.isFinite(Number(text_zoom_scale)) && Number(text_zoom_scale) > 0 ? Number(text_zoom_scale) : 1;
       syncTextViewerWrapUi();
       updateScrollButtonState();
       setTimeout(() => {
@@ -1261,7 +1264,7 @@
 
     async function restoreDefaultUiState() {
       await api('/api/ui-state/reset', { method: 'POST' });
-      applyUiState({ chat_height_px: null, input_height_px: null, text_wrap_enabled: true });
+      applyUiState({ chat_height_px: null, input_height_px: null, text_wrap_enabled: true, text_zoom_scale: 1 });
     }
 
     async function fetchMediaProgress(fileId) {
@@ -2039,6 +2042,10 @@
 
     function setTextViewerZoom(nextZoom) {
       textViewerZoom = Math.max(0.5, nextZoom);
+      if (textViewerZoomSaveTimer) clearTimeout(textViewerZoomSaveTimer);
+      textViewerZoomSaveTimer = setTimeout(() => {
+        saveUiState({ text_zoom_scale: textViewerZoom }).catch(() => {});
+      }, 180);
       syncTextViewerWrapUi();
     }
 
@@ -2579,9 +2586,12 @@
       updateScrollButtonState();
     }
 
-    function buildMediaList() {
+    function buildMediaList(mode = currentViewerMode) {
+      currentViewerMode = mode;
       mediaList = allMessages.filter((m) => {
-        if (m.kind === 'text') return isLongTextMessage(m);
+        if (mode === 'text') {
+          return isLongTextMessage(m);
+        }
         if (m.kind !== 'file') return false;
         const mt = m.mime_type || '';
         return mt.startsWith('image/') || mt.startsWith('video/') || mt.startsWith('audio/');
@@ -2734,7 +2744,9 @@
     }
 
     async function openMediaByMessageId(messageId) {
-      buildMediaList();
+      const target = allMessages.find((m) => m.id === messageId);
+      if (!target) return;
+      buildMediaList(target.kind === 'text' ? 'text' : 'media');
       const index = mediaList.findIndex((m) => m.id === messageId);
       if (index < 0) return;
       await showMediaAt(index);
@@ -2748,6 +2760,7 @@
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
       mediaIndex = -1;
+      currentViewerMode = 'media';
       syncMediaHistoryContext(false);
     }
 
@@ -2772,7 +2785,11 @@
 
     function applyMessages(messages, { followBottom = false, preserveScroll = true } = {}) {
       allMessages = messages;
-      buildMediaList();
+      buildMediaList(!mediaViewer.classList.contains('hidden') ? currentViewerMode : 'media');
+      if (mediaIndex >= 0) {
+        const currentMessageId = getCurrentMediaMessageId();
+        mediaIndex = currentMessageId == null ? -1 : mediaList.findIndex((m) => m.id === currentMessageId);
+      }
       lastAppliedSnapshot = snapshotMessages(messages);
       pendingMessages = null;
       pendingSnapshot = '';
