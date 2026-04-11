@@ -488,6 +488,8 @@
       box-shadow: 0 4px 12px rgba(67, 90, 133, 0.08);
     }
     .media-dialog.audio-mode .media-stage {
+      margin: 0;
+      border-radius: 0 0 var(--media-surface-radius) var(--media-surface-radius);
       background: linear-gradient(180deg, #fbf8ff 0%, #f4efff 38%, #ecf5ff 100%);
     }
     .media-stage img,
@@ -610,9 +612,9 @@
     }
     .audio-shell-footer {
       position: absolute;
-      left: 42px;
-      right: 42px;
-      bottom: 32px;
+      left: 16px;
+      right: 16px;
+      bottom: 6px;
       z-index: 2;
       display: grid;
       grid-template-columns: auto minmax(0, 1fr) auto auto;
