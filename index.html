@@ -1334,10 +1334,6 @@
       };
     }
 
-    function isLongTextMessage(msg) {
-      return msg?.kind === 'text' && getTextPreview(msg.text).truncated;
-    }
-
     function getViewerMessageTitle(item) {
       if (item?.kind === 'text') {
         return String(item.text || '').split('\n').find((line) => line.trim()) || '文本消息';
@@ -2590,7 +2586,7 @@
       currentViewerMode = mode;
       mediaList = allMessages.filter((m) => {
         if (mode === 'text') {
-          return isLongTextMessage(m);
+          return m.kind === 'text';
         }
         if (m.kind !== 'file') return false;
         const mt = m.mime_type || '';
