@@ -20,11 +20,20 @@
       --danger: #d04545;
     }
     * { box-sizing: border-box; }
+    html {
+      overscroll-behavior-y: none;
+    }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
       font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      overscroll-behavior-y: none;
+    }
+    html.drag-scroll-lock,
+    body.drag-scroll-lock {
+      overflow: hidden;
+      touch-action: none;
     }
     .page {
       max-width: 1080px;
@@ -43,7 +52,7 @@
     }
     .chat-panel {
       position: relative;
-      overflow: hidden;
+      overflow: visible;
     }
     .page.manage-mode #chat {
       height: var(--manage-chat-height, 66vh) !important;
@@ -197,11 +206,14 @@
       color: #9a6b00;
     }
     #chat {
-      height: 66vh;
-      min-height: 420px;
+      height: 44vh;
+      min-height: 280px;
       max-height: 82vh;
       overflow: auto;
       overflow-anchor: none;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
       scrollbar-width: none;
       padding: 10px;
       background: #f9fbff;
@@ -377,17 +389,30 @@
     .chat-scroll-indicator {
       position: absolute;
       top: 12px;
-      bottom: 12px;
-      right: 6px;
-      width: 4px;
+      bottom: 28px;
+      right: 0;
+      width: 18px;
       border-radius: 999px;
-      background: rgba(15, 23, 42, 0.10);
-      backdrop-filter: blur(8px);
-      pointer-events: none;
+      background: transparent;
+      backdrop-filter: none;
+      pointer-events: auto;
+      touch-action: none;
       opacity: 0;
       transition: opacity .24s ease;
       z-index: 88;
-      overflow: hidden;
+      overflow: visible;
+    }
+    .chat-scroll-indicator::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 4px;
+      margin-left: -2px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.10);
+      backdrop-filter: blur(8px);
     }
     .chat-panel.chat-scroll-visible .chat-scroll-indicator {
       opacity: 1;
@@ -397,8 +422,9 @@
     }
     .chat-scroll-thumb {
       position: absolute;
-      left: 0;
-      width: 100%;
+      left: 50%;
+      width: 4px;
+      margin-left: -2px;
       background: rgba(37, 99, 235, 0.72);
       border-radius: inherit;
       min-height: 24px;
@@ -412,6 +438,10 @@
       width: 100%;
       min-height: 110px;
       resize: vertical;
+      overflow: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-gutter: stable;
       border-radius: 10px;
       border: 1px solid #ccd7e7;
       padding: 10px;
@@ -931,37 +961,67 @@
     .viewer-indicator-track {
       position: absolute;
       pointer-events: auto;
+      touch-action: none;
       opacity: 0;
       transition: opacity .24s ease;
+      background: transparent;
+      backdrop-filter: none;
+      border-radius: 999px;
+      overflow: visible;
+      z-index: 3;
+    }
+    .viewer-indicator-track::before {
+      content: '';
+      position: absolute;
+      border-radius: 999px;
       background: rgba(15, 23, 42, 0.10);
       backdrop-filter: blur(8px);
-      border-radius: 999px;
-      overflow: hidden;
-      z-index: 3;
     }
     .viewer-indicator-track.hidden {
       display: none;
     }
     .viewer-indicator-track.horizontal {
-      left: 14px;
-      right: 14px;
-      bottom: 8px;
+      left: 10px;
+      right: 10px;
+      bottom: 1px;
+      height: 18px;
+    }
+    .viewer-indicator-track.horizontal::before {
+      left: 0;
+      right: 0;
+      top: 50%;
       height: 4px;
+      margin-top: -2px;
     }
     .viewer-indicator-track.vertical {
       top: 12px;
       bottom: 18px;
-      right: 6px;
+      right: 0;
+      width: 18px;
+    }
+    .viewer-indicator-track.vertical::before {
+      top: 0;
+      bottom: 0;
+      left: 50%;
       width: 4px;
+      margin-left: -2px;
     }
     .viewer-indicator-thumb {
       position: absolute;
-      left: 0;
-      top: 0;
       background: rgba(37, 99, 235, 0.72);
       border-radius: inherit;
       min-width: 18px;
       min-height: 18px;
+    }
+    .viewer-indicator-track.horizontal .viewer-indicator-thumb {
+      top: 50%;
+      height: 4px;
+      margin-top: -2px;
+    }
+    .viewer-indicator-track.vertical .viewer-indicator-thumb {
+      left: 50%;
+      width: 4px;
+      margin-left: -2px;
     }
     .viewer-indicator-thumb.dragging {
       background: rgba(29, 78, 216, 0.92);
@@ -1239,8 +1299,8 @@
     @media (max-width: 768px) {
       .page { padding: 8px; gap: 8px; }
       #chat {
-        height: 58vh;
-        min-height: 320px;
+        height: 39vh;
+        min-height: 220px;
       }
       .task-overlay { padding: 0; }
       .task-dialog {
@@ -1551,7 +1611,7 @@
     let uploadTaskSeq = 1;
     const REMEMBER_PASSWORD_KEY = 'fastfile.remember_password';
     const SELF_MESSAGE_IDS_KEY = 'fastfile.self_message_ids';
-    const DEFAULT_CHAT_HEIGHT = '66vh';
+    const DEFAULT_CHAT_HEIGHT = '44vh';
     const DEFAULT_INPUT_HEIGHT = '110px';
     let mediaList = [];
     let mediaIndex = -1;
@@ -1605,7 +1665,9 @@
     const VIRTUAL_RETENTION_TTL = 600_000;
     const VIRTUAL_RETENTION_TICK_MS = 30_000;
     const VIEWER_INDICATOR_IDLE_MS = 3000;
-    const TEXT_FILE_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'json', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'html', 'htm', 'css', 'scss', 'less', 'xml', 'yml', 'yaml', 'toml', 'ini', 'conf', 'log', 'csv', 'tsv', 'c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'hh', 'java', 'kt', 'kts', 'go', 'rs', 'py', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'sql', 'vue', 'svelte', 'astro', 'lock', 'gitignore', 'dockerfile']);
+    const TEXT_FILE_EXTENSIONS = new Set(['txt', 'text', 'asc', 'nfo', 'md', 'markdown', 'rst', 'adoc', 'asciidoc', 'org', 'tex', 'bib', 'json', 'jsonl', 'ndjson', 'geojson', 'webmanifest', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'html', 'htm', 'xhtml', 'css', 'scss', 'sass', 'less', 'xml', 'svg', 'xsd', 'xsl', 'xslt', 'vtt', 'yml', 'yaml', 'toml', 'ini', 'conf', 'cfg', 'config', 'properties', 'prop', 'cnf', 'log', 'out', 'err', 'csv', 'tsv', 'tab', 'env', 'example', 'c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'hh', 'm', 'mm', 'java', 'kt', 'kts', 'scala', 'groovy', 'swift', 'go', 'rs', 'py', 'pyi', 'rb', 'php', 'pl', 'pm', 'lua', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'sql', 'vue', 'svelte', 'astro', 'graphql', 'gql', 'proto', 'awk', 'sed', 'r', 'jl', 'nim', 'zig', 'dart', 'lock', 'gitignore', 'gitattributes', 'gitmodules', 'dockerignore', 'editorconfig', 'npmrc', 'prettierrc', 'eslintrc', 'eslintignore']);
+    const TEXT_FILE_NAMES = new Set(['dockerfile', 'containerfile', 'makefile', 'justfile', 'package.json', 'tsconfig.json', 'jsconfig.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'go.sum', 'requirements.txt', 'constraints.txt', 'pipfile', 'pipfile.lock', 'poetry.lock', 'composer.json', 'gemfile', 'gemfile.lock']);
+    const TEXT_FILE_MIME_ALLOWLIST = new Set(['application/json', 'application/json-seq', 'application/xml', 'text/xml', 'application/javascript', 'text/javascript', 'application/x-javascript', 'application/yaml', 'application/toml', 'image/svg+xml']);
     const INPUT_VIRTUALIZE_THRESHOLD = 2000;
     const INPUT_LINE_HEIGHT = 21;
     const INPUT_OVERSCAN_LINES = 18;
@@ -1636,6 +1698,11 @@
         rememberPassword.checked = true;
       }
       loginMask.classList.remove('hidden');
+    }
+
+    function setGlobalDragScrollLock(locked) {
+      document.documentElement.classList.toggle('drag-scroll-lock', locked);
+      document.body.classList.toggle('drag-scroll-lock', locked);
     }
 
     function getHeightOffset(heights, endExclusive) {
@@ -1687,6 +1754,7 @@
       shell.appendChild(vertical);
 
       let hideTimer = 0;
+      let horizontalDisabled = hideHorizontal;
       const showIndicators = () => {
         shell.classList.add('indicators-visible');
         if (hideTimer) clearTimeout(hideTimer);
@@ -1711,7 +1779,10 @@
       };
 
       const bindTrackDrag = (track, thumb, axis) => {
+        let activePointerId = null;
         const moveHandler = (event) => {
+          if (activePointerId !== null && event.pointerId !== activePointerId) return;
+          event.preventDefault();
           if (axis === 'x') {
             syncFromHorizontalPointer(event.clientX);
           } else {
@@ -1719,6 +1790,13 @@
           }
         };
         const upHandler = () => {
+          if (activePointerId !== null) {
+            try {
+              track.releasePointerCapture?.(activePointerId);
+            } catch (_) {}
+          }
+          activePointerId = null;
+          setGlobalDragScrollLock(false);
           thumb.classList.remove('dragging');
           window.removeEventListener('pointermove', moveHandler, true);
           window.removeEventListener('pointerup', upHandler, true);
@@ -1727,6 +1805,11 @@
         track.addEventListener('pointerdown', (event) => {
           event.preventDefault();
           event.stopPropagation();
+          activePointerId = event.pointerId;
+          setGlobalDragScrollLock(true);
+          try {
+            track.setPointerCapture?.(event.pointerId);
+          } catch (_) {}
           thumb.classList.add('dragging');
           showIndicators();
           moveHandler(event);
@@ -1737,7 +1820,7 @@
       };
 
       const syncIndicators = (forceVisible = false) => {
-        const horizontalScrollable = !horizontal.classList.contains('hidden') && stage.scrollWidth - stage.clientWidth > 1;
+        const horizontalScrollable = !horizontalDisabled && stage.scrollWidth - stage.clientWidth > 1;
         const verticalScrollable = stage.scrollHeight - stage.clientHeight > 1;
 
         horizontal.classList.toggle('hidden', !horizontalScrollable);
@@ -1749,7 +1832,7 @@
           const maxLeft = Math.max(0, trackWidth - thumbWidth);
           const progress = stage.scrollWidth > stage.clientWidth ? stage.scrollLeft / (stage.scrollWidth - stage.clientWidth) : 0;
           horizontalThumb.style.width = `${thumbWidth}px`;
-          horizontalThumb.style.height = '100%';
+          horizontalThumb.style.height = '4px';
           horizontalThumb.style.transform = `translateX(${maxLeft * progress}px)`;
         }
 
@@ -1758,7 +1841,7 @@
           const thumbHeight = Math.max(24, trackHeight * (stage.clientHeight / Math.max(stage.scrollHeight, 1)));
           const maxTop = Math.max(0, trackHeight - thumbHeight);
           const progress = stage.scrollHeight > stage.clientHeight ? stage.scrollTop / (stage.scrollHeight - stage.clientHeight) : 0;
-          verticalThumb.style.width = '100%';
+          verticalThumb.style.width = '4px';
           verticalThumb.style.height = `${thumbHeight}px`;
           verticalThumb.style.transform = `translateY(${maxTop * progress}px)`;
         }
@@ -1780,7 +1863,7 @@
         syncIndicators,
         showIndicators,
         setHorizontalHidden(hidden) {
-          horizontal.classList.toggle('hidden', hidden);
+          horizontalDisabled = hidden;
           syncIndicators(false);
         },
         cleanup() {
@@ -1921,7 +2004,9 @@
     function taskStatusText(status) {
       const map = {
         queued: '排队中',
+        preparing: '准备中',
         uploading: '上传中',
+        thumbnailing: '缩略图生成中',
         retrying: '重试中',
         done: '完成',
         error: '失败',
@@ -2320,13 +2405,23 @@
 
     function bindChatScrollIndicatorDrag() {
       if (!chatScrollIndicator || !chatScrollThumb) return;
+      let activePointerId = null;
       const moveHandler = (event) => {
+        if (activePointerId !== null && event.pointerId !== activePointerId) return;
+        event.preventDefault();
         const rect = chatScrollIndicator.getBoundingClientRect();
         const ratio = rect.height > 0 ? Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)) : 0;
         chat.scrollTop = ratio * Math.max(0, chat.scrollHeight - chat.clientHeight);
         syncChatScrollIndicator(true);
       };
       const upHandler = () => {
+        if (activePointerId !== null) {
+          try {
+            chatScrollIndicator.releasePointerCapture?.(activePointerId);
+          } catch (_) {}
+        }
+        activePointerId = null;
+        setGlobalDragScrollLock(false);
         chatScrollThumb.classList.remove('dragging');
         window.removeEventListener('pointermove', moveHandler, true);
         window.removeEventListener('pointerup', upHandler, true);
@@ -2335,6 +2430,11 @@
       chatScrollIndicator.addEventListener('pointerdown', (event) => {
         event.preventDefault();
         event.stopPropagation();
+        activePointerId = event.pointerId;
+        setGlobalDragScrollLock(true);
+        try {
+          chatScrollIndicator.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
         chatScrollThumb.classList.add('dragging');
         showChatScrollIndicator();
         moveHandler(event);
@@ -2476,10 +2576,14 @@
     function isTextLikeFileMessage(msg) {
       if (msg?.kind !== 'file') return false;
       if (getMessageMediaKind(msg)) return false;
+      const fileName = String(msg?.file_name || '').trim().toLowerCase();
       const mimeType = String(msg?.mime_type || '').toLowerCase();
+      const ext = getFileExtension(fileName);
+      if (TEXT_FILE_NAMES.has(fileName)) return true;
       if (mimeType.startsWith('text/')) return true;
-      if (mimeType.includes('json') || mimeType.includes('xml') || mimeType.includes('javascript') || mimeType.includes('typescript')) return true;
-      const ext = getFileExtension(msg?.file_name || '');
+      if (TEXT_FILE_MIME_ALLOWLIST.has(mimeType)) return true;
+      if (mimeType.endsWith('+json') || mimeType.endsWith('+xml') || mimeType.endsWith('+yaml')) return true;
+      if (mimeType.includes('javascript') || mimeType.includes('typescript')) return true;
       return TEXT_FILE_EXTENSIONS.has(ext);
     }
 
@@ -2830,6 +2934,15 @@
       placeholder.title = '点击查看详情';
       placeholder.onclick = () => openMediaByMessageId(item.id).catch(() => {});
       node.replaceWith(placeholder);
+    }
+
+    function bindThumbnailImageFallback(img, primarySrc, fallbackSrc) {
+      if (!primarySrc || !fallbackSrc || primarySrc === fallbackSrc) return;
+      img.addEventListener('error', () => {
+        if (img.dataset.thumbnailFallbackApplied === '1') return;
+        img.dataset.thumbnailFallbackApplied = '1';
+        img.src = fallbackSrc;
+      }, { once: true });
     }
 
     function formatAudioMime(mimeType, fileName) {
@@ -4530,30 +4643,74 @@
         if ((msg.mime_type || '').startsWith('image/')) {
           const img = document.createElement('img');
           img.className = 'thumb';
-          img.src = msg.file_url;
+          img.src = msg.thumbnail_url || msg.file_url;
           img.alt = msg.file_name || 'image';
           img.style.cursor = 'pointer';
           img.title = '点击预览（支持上一条/下一条）';
-          attachImageCompatibility(img, msg, true);
+          if (msg.thumbnail_url) {
+            let triedOriginal = false;
+            img.addEventListener('load', () => {
+              setMediaCompatibility(msg, { kind: 'image', supported: true });
+            });
+            img.addEventListener('error', () => {
+              if (!triedOriginal && msg.file_url) {
+                triedOriginal = true;
+                img.src = msg.file_url;
+                return;
+              }
+              replaceThumbWithPlaceholder(img, msg, 'image');
+            });
+          } else {
+            attachImageCompatibility(img, msg, true);
+          }
           img.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
           bubble.appendChild(img);
         } else if ((msg.mime_type || '').startsWith('video/')) {
-          const video = document.createElement('video');
-          video.className = 'thumb';
-          video.preload = 'metadata';
-          video.muted = true;
-          video.playsInline = true;
-          video.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-          video.src = `${msg.file_url}#t=0.08`;
-          video.style.cursor = 'pointer';
-          video.title = '点击放大播放（支持上一条/下一条）';
-          attachVideoCompatibility(video, msg, true);
-          video.onclick = (e) => {
-            e.preventDefault();
-            video.pause();
-            openMediaByMessageId(msg.id).catch(() => {});
-          };
-          bubble.appendChild(video);
+          if (msg.thumbnail_url) {
+            const thumb = document.createElement('img');
+            thumb.className = 'thumb';
+            thumb.src = msg.thumbnail_url;
+            thumb.alt = msg.file_name || 'video';
+            thumb.style.cursor = 'pointer';
+            thumb.title = '点击放大播放（支持上一条/下一条）';
+            thumb.addEventListener('error', () => {
+              const video = document.createElement('video');
+              video.className = 'thumb';
+              video.preload = 'metadata';
+              video.muted = true;
+              video.playsInline = true;
+              video.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+              video.src = `${msg.file_url}#t=0.08`;
+              video.style.cursor = 'pointer';
+              video.title = '点击放大播放（支持上一条/下一条）';
+              attachVideoCompatibility(video, msg, true);
+              video.onclick = (e) => {
+                e.preventDefault();
+                video.pause();
+                openMediaByMessageId(msg.id).catch(() => {});
+              };
+              thumb.replaceWith(video);
+            }, { once: true });
+            thumb.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+            bubble.appendChild(thumb);
+          } else {
+            const video = document.createElement('video');
+            video.className = 'thumb';
+            video.preload = 'metadata';
+            video.muted = true;
+            video.playsInline = true;
+            video.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+            video.src = `${msg.file_url}#t=0.08`;
+            video.style.cursor = 'pointer';
+            video.title = '点击放大播放（支持上一条/下一条）';
+            attachVideoCompatibility(video, msg, true);
+            video.onclick = (e) => {
+              e.preventDefault();
+              video.pause();
+              openMediaByMessageId(msg.id).catch(() => {});
+            };
+            bubble.appendChild(video);
+          }
         } else if ((msg.mime_type || '').startsWith('audio/')) {
           const card = createAudioCard(msg, { compact: true });
           enhanceAudioCard(card, msg);
@@ -5047,10 +5204,122 @@
       });
     }
 
+    const THUMBNAIL_MAX_DIMENSION = 480;
+
+    function fitThumbnailSize(width, height, maxDimension = THUMBNAIL_MAX_DIMENSION) {
+      const safeWidth = Math.max(1, Math.round(width || 1));
+      const safeHeight = Math.max(1, Math.round(height || 1));
+      const scale = Math.min(1, maxDimension / Math.max(safeWidth, safeHeight));
+      return {
+        width: Math.max(1, Math.round(safeWidth * scale)),
+        height: Math.max(1, Math.round(safeHeight * scale)),
+      };
+    }
+
+    function canvasToPngDataUrl(canvas) {
+      return canvas.toDataURL('image/png');
+    }
+
+    async function buildImageThumbnailDataUrl(file) {
+      const objectUrl = URL.createObjectURL(file);
+      try {
+        if ('createImageBitmap' in window) {
+          try {
+            const bitmap = await createImageBitmap(file);
+            const { width, height } = fitThumbnailSize(bitmap.width, bitmap.height);
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return null;
+            ctx.drawImage(bitmap, 0, 0, width, height);
+            bitmap.close();
+            return canvasToPngDataUrl(canvas);
+          } catch (_) {
+            // 回退到 <img> 解码路径
+          }
+        }
+        const img = new Image();
+        img.decoding = 'async';
+        img.src = objectUrl;
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = () => reject(new Error('图片缩略图生成失败'));
+        });
+        const { width, height } = fitThumbnailSize(img.naturalWidth || img.width, img.naturalHeight || img.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(img, 0, 0, width, height);
+        return canvasToPngDataUrl(canvas);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+
+    async function buildVideoThumbnailDataUrl(file) {
+      const objectUrl = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.src = objectUrl;
+      try {
+        await new Promise((resolve, reject) => {
+          const onLoaded = () => resolve();
+          const onError = () => reject(new Error('视频缩略图生成失败'));
+          video.addEventListener('loadeddata', onLoaded, { once: true });
+          video.addEventListener('error', onError, { once: true });
+        });
+        if ((video.videoWidth || 0) <= 0 || (video.videoHeight || 0) <= 0) return null;
+        const previewTime = Math.min(0.2, Math.max(0.04, (video.duration || 0) / 6));
+        if (Number.isFinite(previewTime) && previewTime > 0) {
+          await new Promise((resolve) => {
+            const onSeeked = () => resolve();
+            video.addEventListener('seeked', onSeeked, { once: true });
+            try {
+              video.currentTime = previewTime;
+            } catch (_) {
+              resolve();
+            }
+          });
+        }
+        const { width, height } = fitThumbnailSize(video.videoWidth, video.videoHeight);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(video, 0, 0, width, height);
+        return canvasToPngDataUrl(canvas);
+      } finally {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+
+    function shouldPrepareThumbnail(file) {
+      if (!file || file.size <= 0) return false;
+      const type = String(file.type || '').toLowerCase();
+      return type.startsWith('image/') || type.startsWith('video/');
+    }
+
+    function createThumbnailPromise(file) {
+      if (!shouldPrepareThumbnail(file)) return Promise.resolve(null);
+      const type = String(file.type || '').toLowerCase();
+      const task = type.startsWith('video/') ? buildVideoThumbnailDataUrl(file) : buildImageThumbnailDataUrl(file);
+      return task.catch(() => null);
+    }
+
     function createTask(file) {
       const id = uploadTaskSeq++;
       const now = Date.now();
-      return {
+      const needsThumbnail = shouldPrepareThumbnail(file);
+      const task = {
         id,
         file,
         fileKey: makeFileKey(file),
@@ -5067,9 +5336,20 @@
         etaSec: null,
         error: '',
         retries: 0,
+        needsThumbnail,
+        thumbnailReady: !needsThumbnail,
+        thumbnailDataUrl: null,
+        thumbnailPromise: Promise.resolve(null),
         controllers: new Set(),
         chunks: [],
       };
+      task.thumbnailPromise = (needsThumbnail ? createThumbnailPromise(file) : Promise.resolve(null)).then((dataUrl) => {
+        task.thumbnailDataUrl = dataUrl;
+        task.thumbnailReady = true;
+        if (task.status === 'thumbnailing') renderUploadTasks();
+        return dataUrl;
+      });
+      return task;
     }
 
     function elapsedSec(task) {
@@ -5315,10 +5595,16 @@
         await Promise.all(workers);
         if (task.status === 'cancelled') return;
 
+        if (task.needsThumbnail && !task.thumbnailReady) {
+          task.status = 'thumbnailing';
+          renderUploadTasks();
+        }
+        task.thumbnailDataUrl = await task.thumbnailPromise;
+
         const completed = await api('/api/uploads/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ upload_id: task.uploadId })
+          body: JSON.stringify({ upload_id: task.uploadId, thumbnail_data_url: task.thumbnailDataUrl })
         });
         markMessageAsSelf(completed.id);
 
