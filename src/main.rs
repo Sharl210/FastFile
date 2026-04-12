@@ -16,6 +16,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use rand::{distributions::Alphanumeric, Rng};
@@ -33,6 +34,7 @@ const MESSAGES_REVISION_KEY: &str = "messages_revision";
 struct AppState {
     db_path: PathBuf,
     files_dir: PathBuf,
+    thumbs_dir: PathBuf,
     temp_dir: PathBuf,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     startup_config: StartupConfig,
@@ -158,6 +160,7 @@ struct UploadChunkResponse {
 #[derive(Deserialize)]
 struct UploadCompleteRequest {
     upload_id: String,
+    thumbnail_data_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -225,12 +228,18 @@ struct MessageDto {
     mime_type: Option<String>,
     file_url: Option<String>,
     download_url: Option<String>,
+    thumbnail_url: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct FileRoutePath {
     file_id: String,
     display_name: String,
+}
+
+#[derive(Deserialize)]
+struct ThumbnailRoutePath {
+    file_id: String,
 }
 
 #[derive(Debug)]
@@ -442,6 +451,7 @@ fn ensure_file_belongs_to_user(conn: &Connection, user_id: &str, file_id: &str) 
 fn init_storage(
     storage_root: &Path,
     files_dir: &Path,
+    thumbs_dir: &Path,
     temp_dir: &Path,
     db_path: &Path,
     primary_user_id: &str,
@@ -450,6 +460,8 @@ fn init_storage(
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建存储目录失败: {e}")))?;
     std::fs::create_dir_all(files_dir)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建文件目录失败: {e}")))?;
+    std::fs::create_dir_all(thumbs_dir)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建缩略图目录失败: {e}")))?;
     std::fs::create_dir_all(temp_dir)
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时目录失败: {e}")))?;
 
@@ -638,11 +650,20 @@ fn row_to_dto(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageDto> {
     let kind: String = row.get("kind")?;
     let file_id: Option<String> = row.get("file_id")?;
     let file_name: Option<String> = row.get("file_name")?;
+    let mime_type: Option<String> = row.get("mime_type")?;
     let file_url = file_id.as_ref().map(|fid| {
         let display = encode(file_name.as_deref().unwrap_or("file"));
         format!("/f/{fid}/{display}")
     });
     let download_url = file_url.as_ref().map(|v| format!("{v}?download=1"));
+    let thumbnail_url = file_id.as_ref().and_then(|fid| {
+        let mime = mime_type.as_deref().unwrap_or("");
+        if mime.starts_with("image/") || mime.starts_with("video/") {
+            Some(format!("/thumb/{fid}"))
+        } else {
+            None
+        }
+    });
 
     Ok(MessageDto {
         id: row.get("id")?,
@@ -652,10 +673,41 @@ fn row_to_dto(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageDto> {
         file_id,
         file_name,
         file_size: row.get("file_size")?,
-        mime_type: row.get("mime_type")?,
+        mime_type,
         file_url,
         download_url,
+        thumbnail_url,
     })
+}
+
+fn thumbnail_path(thumbs_dir: &Path, file_id: &str) -> PathBuf {
+    thumbs_dir.join(format!("{file_id}.png"))
+}
+
+fn decode_thumbnail_data_url(data_url: &str) -> Result<Vec<u8>, AppError> {
+    let value = data_url.trim();
+    let prefix = "data:image/png;base64,";
+    if !value.starts_with(prefix) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "缩略图必须是 PNG data URL"));
+    }
+    BASE64_STANDARD
+        .decode(&value[prefix.len()..])
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, format!("缩略图解码失败: {e}")))
+}
+
+async fn persist_thumbnail(
+    thumbs_dir: &Path,
+    file_id: &str,
+    thumbnail_data_url: Option<&str>,
+) -> Result<(), AppError> {
+    let thumb_path = thumbnail_path(thumbs_dir, file_id);
+    if let Some(data_url) = thumbnail_data_url.filter(|value| !value.trim().is_empty()) {
+        let bytes = decode_thumbnail_data_url(data_url)?;
+        fs::write(&thumb_path, bytes)
+            .await
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("保存缩略图失败: {e}")))?;
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1561,6 +1613,8 @@ async fn complete_upload(
         let _ = fs::remove_file(&temp_path).await;
     }
 
+    persist_thumbnail(&state.thumbs_dir, &file_id, payload.thumbnail_data_url.as_deref()).await?;
+
     let tx = conn
         .transaction()
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("开启事务失败: {e}")))?;
@@ -1693,6 +1747,12 @@ async fn delete_messages(
                 .await
                 .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除文件失败: {e}")))?;
         }
+        let thumb_path = thumbnail_path(&state.thumbs_dir, fid);
+        if thumb_path.exists() {
+            fs::remove_file(&thumb_path)
+                .await
+                .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("删除缩略图失败: {e}")))?;
+        }
     }
 
     let tx = conn
@@ -1817,6 +1877,39 @@ async fn direct_file(
     Ok(resp)
 }
 
+async fn direct_thumbnail(
+    State(state): State<AppState>,
+    AxumPath(path): AxumPath<ThumbnailRoutePath>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let auth = require_auth(&headers, &state).await?;
+    let file_id = path.file_id;
+
+    let mime_type: String = {
+        let conn = open_conn(&state.db_path)?;
+        conn.query_row(
+            "SELECT mime_type FROM messages WHERE file_id = ?1 AND user_id = ?2",
+            params![file_id, auth.user_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?
+        .unwrap_or_default()
+    };
+
+    if !(mime_type.starts_with("image/") || mime_type.starts_with("video/")) {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "缩略图不存在"));
+    }
+
+    let path = thumbnail_path(&state.thumbs_dir, &file_id);
+    let bytes = fs::read(&path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "缩略图不存在"))?;
+
+    let mut resp = Response::new(Body::from(bytes));
+    resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    Ok(resp)
+}
+
 async fn restart_service(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1884,6 +1977,7 @@ async fn run() -> Result<(), AppError> {
         })
         .unwrap_or(true);
     let files_dir = storage_root.join("files");
+    let thumbs_dir = storage_root.join("thumbs");
     let temp_dir = storage_root.join("tmp");
     let db_path = storage_root.join("messages.db");
 
@@ -1894,6 +1988,7 @@ async fn run() -> Result<(), AppError> {
     init_storage(
         &storage_root,
         &files_dir,
+        &thumbs_dir,
         &temp_dir,
         &db_path,
         &primary_user_id,
@@ -1902,6 +1997,7 @@ async fn run() -> Result<(), AppError> {
     let state = AppState {
         db_path,
         files_dir,
+        thumbs_dir,
         temp_dir,
         runtime_config: runtime_config.clone(),
         startup_config: StartupConfig { allow_web_restart },
@@ -1942,6 +2038,7 @@ async fn run() -> Result<(), AppError> {
         .route("/api/uploads/cancel", post(cancel_upload))
         .route("/api/admin/restart", post(restart_service))
         .route("/f/:file_id/*display_name", get(direct_file))
+        .route("/thumb/:file_id", get(direct_thumbnail))
         .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn(no_cache_middleware))
         .with_state(state);
@@ -2025,10 +2122,11 @@ mod tests {
     fn init_storage_creates_message_revision_for_empty_database() {
         let storage_root = temp_storage_root("empty-revision");
         let files_dir = storage_root.join("files");
+        let thumbs_dir = storage_root.join("thumbs");
         let temp_dir = storage_root.join("tmp");
         let db_path = storage_root.join("messages.db");
 
-        init_storage(&storage_root, &files_dir, &temp_dir, &db_path, "u_test").unwrap();
+        init_storage(&storage_root, &files_dir, &thumbs_dir, &temp_dir, &db_path, "u_test").unwrap();
 
         let conn = Connection::open(&db_path).unwrap();
         let revision: String = conn
@@ -2048,6 +2146,7 @@ mod tests {
         let storage_root = temp_storage_root("existing-revision");
         std::fs::create_dir_all(&storage_root).unwrap();
         let files_dir = storage_root.join("files");
+        let thumbs_dir = storage_root.join("thumbs");
         let temp_dir = storage_root.join("tmp");
         let db_path = storage_root.join("messages.db");
 
@@ -2071,7 +2170,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        init_storage(&storage_root, &files_dir, &temp_dir, &db_path, "u_test").unwrap();
+        init_storage(&storage_root, &files_dir, &thumbs_dir, &temp_dir, &db_path, "u_test").unwrap();
 
         let conn = Connection::open(&db_path).unwrap();
         let revision: String = conn
