@@ -596,6 +596,14 @@
       color: transparent;
       caret-color: var(--text);
     }
+    #textInput {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      scrollbar-gutter: auto;
+    }
+    #textInput::-webkit-scrollbar {
+      display: none;
+    }
     .input-stage.drag-upload-active textarea {
       border-color: #1d72ff;
       background: rgba(29, 114, 255, .03);
@@ -775,6 +783,53 @@
     .confirm-dialog {
       width: min(420px, 100%);
       gap: 14px;
+    }
+    .paste-progress-dialog {
+      width: min(420px, 100%);
+      gap: 14px;
+      padding: 22px 20px 18px;
+      box-sizing: border-box;
+    }
+    #largePasteOverlay {
+      z-index: 160;
+    }
+    .paste-progress-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .paste-progress-copy {
+      font-size: 13px;
+      color: #475569;
+      line-height: 1.6;
+    }
+    .paste-progress-track {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    .paste-progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2563eb 0%, #38bdf8 100%);
+      transition: width .12s linear;
+    }
+    .paste-progress-meta {
+      font-size: 13px;
+      color: #334155;
+      text-align: center;
+    }
+    .paste-progress-actions {
+      display: flex;
+      justify-content: center;
+      margin-top: 4px;
+    }
+    .paste-progress-actions .danger {
+      min-width: 128px;
     }
     .toast-stack {
       position: fixed;
@@ -1611,6 +1666,20 @@
     </div>
   </div>
 
+  <div class="task-overlay hidden" id="largePasteOverlay">
+    <div class="search-dialog paste-progress-dialog" data-large-paste-dialog="1" role="dialog" aria-modal="true" aria-labelledby="largePasteTitle">
+      <div class="paste-progress-title" id="largePasteTitle">正在分段粘贴</div>
+      <div class="paste-progress-copy" id="largePasteMessage">正在把大段文本分片写入输入区，请稍候。</div>
+      <div class="paste-progress-track" aria-hidden="true">
+        <div class="paste-progress-fill" id="largePasteProgressFill"></div>
+      </div>
+      <div class="paste-progress-meta" id="largePasteProgressMeta">当前正在粘贴第 1 / 1 片</div>
+      <div class="paste-progress-actions">
+        <button id="largePasteCancelBtn" class="danger">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-stack" id="toastStack"></div>
 
   <div class="media-viewer hidden" id="mediaViewer">
@@ -1740,6 +1809,11 @@
     const confirmDialogMessage = document.getElementById('confirmDialogMessage');
     const confirmCancelBtn = document.getElementById('confirmCancelBtn');
     const confirmActionBtn = document.getElementById('confirmActionBtn');
+    const largePasteOverlay = document.getElementById('largePasteOverlay');
+    const largePasteMessage = document.getElementById('largePasteMessage');
+    const largePasteProgressFill = document.getElementById('largePasteProgressFill');
+    const largePasteProgressMeta = document.getElementById('largePasteProgressMeta');
+    const largePasteCancelBtn = document.getElementById('largePasteCancelBtn');
     const toastStack = document.getElementById('toastStack');
     const filterMenuBtn = document.getElementById('filterMenuBtn');
     const filterMenu = document.getElementById('filterMenu');
@@ -1850,6 +1924,7 @@
     let virtualRetentionClock = 0;
     let chatIndicatorHideTimer = 0;
     let inputIndicatorHideTimer = 0;
+    let activeLargePasteSession = null;
 
     const SCROLL_EDGE_THRESHOLD = 24;
     const SMOOTH_SCROLL_DURATION = 1000;
@@ -3071,6 +3146,40 @@
       });
     }
 
+    function formatLargePasteProgress(inserted, total) {
+      const safeTotal = Math.max(1, Number(total || 0));
+      const safeInserted = Math.min(safeTotal, Math.max(0, Number(inserted || 0)));
+      const totalChunks = Math.max(1, Math.ceil(safeTotal / LARGE_PASTE_CHUNK_SIZE));
+      const currentChunk = safeInserted <= 0 ? 1 : Math.min(totalChunks, Math.ceil(safeInserted / LARGE_PASTE_CHUNK_SIZE));
+      return {
+        currentChunk,
+        totalChunks,
+        percent: Math.min(100, Math.max(0, (safeInserted / safeTotal) * 100)),
+      };
+    }
+
+    function updateLargePasteDialog(inserted, total) {
+      if (!largePasteOverlay || !largePasteProgressFill || !largePasteProgressMeta) return;
+      const progress = formatLargePasteProgress(inserted, total);
+      largePasteProgressFill.style.width = `${progress.percent}%`;
+      largePasteProgressMeta.textContent = `当前正在粘贴第 ${progress.currentChunk} / ${progress.totalChunks} 片`;
+    }
+
+    function closeLargePasteDialog() {
+      largePasteOverlay?.classList.add('hidden');
+      activeLargePasteSession = null;
+    }
+
+    function openLargePasteDialog({ total, onCancel }) {
+      activeLargePasteSession = { onCancel };
+      if (largePasteMessage) {
+        largePasteMessage.textContent = '正在把大段文本分片写入输入区，请稍候。';
+      }
+      updateLargePasteDialog(0, total);
+      largePasteOverlay?.classList.remove('hidden');
+      requestAnimationFrame(() => largePasteCancelBtn?.focus());
+    }
+
     function toggleFilterMenu(force) {
       const nextHidden = typeof force === 'boolean' ? !force : !filterMenu.classList.contains('hidden');
       filterMenu.classList.toggle('hidden', nextHidden);
@@ -3138,7 +3247,7 @@
       return String(text || '').length >= LARGE_PASTE_THRESHOLD;
     }
 
-    async function insertLargeTextInChunks(textarea, text, { onChunk = null, start = null, end = null } = {}) {
+    async function insertLargeTextInChunks(textarea, text, { onChunk = null, start = null, end = null, controller = null } = {}) {
       const initialValue = textarea.value || '';
       const safeStart = Number.isFinite(start) ? start : (textarea.selectionStart ?? initialValue.length);
       const safeEnd = Number.isFinite(end) ? end : (textarea.selectionEnd ?? initialValue.length);
@@ -3146,7 +3255,11 @@
       const after = initialValue.slice(safeEnd);
       let inserted = 0;
       textarea.value = before;
+      if (typeof onChunk === 'function') {
+        onChunk(0, text.length);
+      }
       while (inserted < text.length) {
+        if (controller?.cancelled) break;
         const chunk = text.slice(inserted, inserted + LARGE_PASTE_CHUNK_SIZE);
         textarea.value += chunk;
         inserted += chunk.length;
@@ -3160,8 +3273,9 @@
         }
       }
       textarea.value += after;
-      const finalCaret = before.length + text.length;
+      const finalCaret = before.length + inserted;
       textarea.setSelectionRange(finalCaret, finalCaret);
+      return { inserted, cancelled: Boolean(controller?.cancelled) };
     }
 
     function handleLargeTextPaste(event, textarea, { onChunk = null } = {}) {
@@ -3178,17 +3292,44 @@
       const start = textarea.selectionStart ?? textarea.value.length;
       const end = textarea.selectionEnd ?? textarea.value.length;
       const previousReadOnly = textarea.readOnly;
+      const controller = { cancelled: false };
+      let finalInserted = 0;
+      let cancelled = false;
       textarea.dataset.largePasteBusy = '1';
       textarea.style.cursor = 'progress';
       textarea.readOnly = true;
-      insertLargeTextInChunks(textarea, pastedText, { onChunk, start, end })
+      openLargePasteDialog({
+        total: pastedText.length,
+        onCancel: () => {
+          controller.cancelled = true;
+        },
+      });
+      insertLargeTextInChunks(textarea, pastedText, {
+        onChunk(inserted, total) {
+          updateLargePasteDialog(inserted, total);
+          if (typeof onChunk === 'function') {
+            onChunk(inserted, total);
+          }
+        },
+        start,
+        end,
+        controller,
+      })
+        .then((result) => {
+          finalInserted = result?.inserted || 0;
+          cancelled = Boolean(result?.cancelled);
+          if (cancelled) {
+            showToast('已取消分段粘贴，已保留当前已写入内容', 'error');
+          }
+        })
         .catch((err) => alert(err?.message || '大文本粘贴失败'))
         .finally(() => {
+          closeLargePasteDialog();
           delete textarea.dataset.largePasteBusy;
           textarea.style.cursor = '';
           textarea.readOnly = previousReadOnly;
           if (typeof onChunk === 'function') {
-            onChunk(pastedText.length, pastedText.length);
+            onChunk(cancelled ? finalInserted : pastedText.length, pastedText.length);
           }
         });
       return true;
@@ -6215,6 +6356,9 @@
     closeSearchBtn.onclick = closeSearchDialog;
     confirmCancelBtn.onclick = () => closeConfirmDialog(false);
     confirmActionBtn.onclick = () => closeConfirmDialog(true);
+    largePasteCancelBtn.onclick = () => {
+      activeLargePasteSession?.onCancel?.();
+    };
     confirmSearchBtn.onclick = () => {
       applySearchQuery(searchInput.value);
       closeSearchDialog();
