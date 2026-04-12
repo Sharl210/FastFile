@@ -43,6 +43,8 @@ struct AppState {
 struct RuntimeConfig {
     users: Vec<RuntimeUser>,
     session_ttl_seconds: i64,
+    single_upload_limit_bytes: i64,
+    single_upload_limit_label: String,
 }
 
 #[derive(Clone)]
@@ -74,6 +76,12 @@ struct ErrorBody {
 #[derive(Serialize)]
 struct HealthBody {
     ok: bool,
+}
+
+#[derive(Serialize)]
+struct PublicConfigBody {
+    single_upload_limit_bytes: i64,
+    single_upload_limit_label: String,
 }
 
 #[derive(Serialize)]
@@ -276,6 +284,47 @@ fn parse_runtime_users(raw: &str) -> Vec<RuntimeUser> {
     }
 
     users
+}
+
+fn parse_upload_limit_spec(raw: &str) -> Result<(i64, String), AppError> {
+    let value = raw.trim().to_uppercase().replace(' ', "");
+    if value.is_empty() {
+        return Ok((5_i64 * 1024 * 1024 * 1024, "5 GB".to_string()));
+    }
+
+    let (number_text, unit, unit_bytes) = if let Some(prefix) = value.strip_suffix("GB") {
+        (prefix, "GB", 1024_f64 * 1024_f64 * 1024_f64)
+    } else if let Some(prefix) = value.strip_suffix("MB") {
+        (prefix, "MB", 1024_f64 * 1024_f64)
+    } else {
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FASTFILE_SINGLE_UPLOAD_LIMIT 只支持 MB 或 GB 单位，例如 512MB 或 5GB",
+        ));
+    };
+
+    let number = number_text.parse::<f64>().map_err(|_| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FASTFILE_SINGLE_UPLOAD_LIMIT 数值格式无效，例如 512MB、5GB、5.25GB",
+        )
+    })?;
+    if !number.is_finite() || number <= 0.0 {
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FASTFILE_SINGLE_UPLOAD_LIMIT 必须大于 0",
+        ));
+    }
+
+    let bytes = (number * unit_bytes).round();
+    if bytes <= 0.0 || bytes > i64::MAX as f64 {
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FASTFILE_SINGLE_UPLOAD_LIMIT 超出可支持范围",
+        ));
+    }
+
+    Ok((bytes as i64, format!("{} {}", number_text, unit)))
 }
 
 impl RuntimeConfig {
@@ -762,6 +811,14 @@ async fn healthz() -> Json<HealthBody> {
     Json(HealthBody { ok: true })
 }
 
+async fn public_config(State(state): State<AppState>) -> Json<PublicConfigBody> {
+    let cfg = state.runtime_config.read().await.clone();
+    Json(PublicConfigBody {
+        single_upload_limit_bytes: cfg.single_upload_limit_bytes,
+        single_upload_limit_label: cfg.single_upload_limit_label,
+    })
+}
+
 async fn auth(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
@@ -1045,6 +1102,15 @@ async fn create_text_message(
     Json(payload): Json<TextRequest>,
 ) -> Result<Json<MessageDto>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    let cfg = state.runtime_config.read().await.clone();
+    let text_bytes = i64::try_from(payload.text.as_bytes().len())
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "文本数据过大"))?;
+    if text_bytes > cfg.single_upload_limit_bytes {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("单次上传数据不能超过 {}", cfg.single_upload_limit_label),
+        ));
+    }
 
     let mut conn = open_conn(&state.db_path)?;
     let tx = conn
@@ -1078,6 +1144,7 @@ async fn create_file_message(
     mut multipart: Multipart,
 ) -> Result<Json<MessageDto>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    let cfg = state.runtime_config.read().await.clone();
 
     let mut found = false;
     let mut file_id = String::new();
@@ -1113,6 +1180,13 @@ async fn create_file_message(
         {
             file_size += i64::try_from(chunk.len())
                 .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "文件过大"))?;
+            if file_size > cfg.single_upload_limit_bytes {
+                let _ = fs::remove_file(&path).await;
+                return Err(AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("单次上传数据不能超过 {}", cfg.single_upload_limit_label),
+                ));
+            }
             out.write_all(&chunk)
                 .await
                 .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("写入文件失败: {e}")))?;
@@ -1156,6 +1230,7 @@ async fn init_upload(
     Json(payload): Json<UploadInitRequest>,
 ) -> Result<Json<UploadInitResponse>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    let cfg = state.runtime_config.read().await.clone();
 
     if payload.file_key.trim().is_empty() {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "file_key 不能为空"));
@@ -1165,6 +1240,12 @@ async fn init_upload(
     }
     if payload.file_size <= 0 {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "file_size 必须大于 0"));
+    }
+    if payload.file_size > cfg.single_upload_limit_bytes {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("单次上传数据不能超过 {}", cfg.single_upload_limit_label),
+        ));
     }
 
     let chunk_size = 4 * 1024 * 1024;
@@ -1845,6 +1926,7 @@ async fn run() -> Result<(), AppError> {
     let app = Router::new()
         .route("/", get(index_page))
         .route("/api/healthz", get(healthz))
+        .route("/api/public-config", get(public_config))
         .route("/api/auth", post(auth))
         .route("/api/logout", post(logout))
         .route("/api/ui-state", get(get_ui_state).put(update_ui_state))
@@ -1905,9 +1987,18 @@ fn load_runtime_config(config_path: &Path) -> Result<RuntimeConfig, AppError> {
         .filter(|v| *v > 0)
         .unwrap_or(86_400);
 
+    let upload_limit_raw = file_map
+        .get("FASTFILE_SINGLE_UPLOAD_LIMIT")
+        .cloned()
+        .or_else(|| env::var("FASTFILE_SINGLE_UPLOAD_LIMIT").ok())
+        .unwrap_or_else(|| "5GB".to_string());
+    let (single_upload_limit_bytes, single_upload_limit_label) = parse_upload_limit_spec(&upload_limit_raw)?;
+
     Ok(RuntimeConfig {
         users,
         session_ttl_seconds,
+        single_upload_limit_bytes,
+        single_upload_limit_label,
     })
 }
 
@@ -2007,5 +2098,16 @@ mod tests {
         assert_eq!(users[0].password, "alpha");
         assert_eq!(users[1].password, "beta");
         assert_eq!(users[2].password, "gamma");
+    }
+
+    #[test]
+    fn parse_upload_limit_spec_supports_mb_gb_and_decimals() {
+        let (bytes_gb, label_gb) = parse_upload_limit_spec("5.121315GB").unwrap();
+        assert_eq!(label_gb, "5.121315 GB");
+        assert!(bytes_gb > 5_i64 * 1024 * 1024 * 1024);
+
+        let (bytes_mb, label_mb) = parse_upload_limit_spec("512MB").unwrap();
+        assert_eq!(label_mb, "512 MB");
+        assert_eq!(bytes_mb, 512_i64 * 1024 * 1024);
     }
 }
