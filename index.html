@@ -221,8 +221,8 @@
     }
     #chat {
       height: 44vh;
-      min-height: 280px;
-      max-height: 82vh;
+      min-height: 0;
+      max-height: none;
       overflow: auto;
       overflow-anchor: none;
       overscroll-behavior: auto;
@@ -390,7 +390,7 @@
       z-index: 90;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 16px;
       pointer-events: none;
     }
     .scroll-fab {
@@ -603,6 +603,7 @@
       caret-color: var(--text);
     }
     #textInput {
+      min-height: 0;
       scrollbar-width: none;
       -ms-overflow-style: none;
       scrollbar-gutter: auto;
@@ -1492,7 +1493,7 @@
       .page { padding: 8px; gap: 8px; }
       #chat {
         height: 39vh;
-        min-height: 220px;
+        min-height: 0;
       }
       textarea {
         resize: none;
@@ -1508,12 +1509,13 @@
         grid-template-columns: repeat(2, minmax(120px, 1fr));
       }
       .scroll-fab-group {
-        left: auto;
-        right: 8px;
-        top: auto;
-        bottom: 88px;
-        transform: none;
+        left: 8px;
+        right: auto;
+        top: 50%;
+        bottom: auto;
+        transform: translateY(-50%);
         width: auto;
+        gap: 16px;
       }
       button, input[type="file"], select {
         min-height: 38px;
@@ -1978,13 +1980,15 @@
       }
     }
 
-    function prepareLoginMaskWithRememberedPassword() {
+    function prepareLoginMaskWithRememberedPassword({ show = true } = {}) {
       const cached = getRememberedPassword();
       if (cached) {
         passwordInput.value = cached;
         rememberPassword.checked = true;
       }
-      loginMask.classList.remove('hidden');
+      if (show) {
+        loginMask.classList.remove('hidden');
+      }
     }
 
     function setGlobalDragScrollLock(locked) {
@@ -2834,8 +2838,14 @@
       const moveHandler = (event) => {
         if (activePointerId !== null && event.pointerId !== activePointerId) return;
         event.preventDefault();
-        const nextHeight = Math.max(minHeight, Math.min(maxHeight, startHeight + (event.clientY - startY)));
-        target.style.height = `${Math.round(nextHeight)}px`;
+        let nextHeight = startHeight + (event.clientY - startY);
+        if (Number.isFinite(minHeight)) {
+          nextHeight = Math.max(minHeight, nextHeight);
+        }
+        if (Number.isFinite(maxHeight)) {
+          nextHeight = Math.min(maxHeight, nextHeight);
+        }
+        target.style.height = `${Math.max(1, Math.round(nextHeight))}px`;
         onUpdate();
       };
       const upHandler = () => {
@@ -3387,6 +3397,118 @@
       return String(text || '').length >= LARGE_PASTE_THRESHOLD;
     }
 
+    function rememberTextareaSnapshot(textarea) {
+      if (!textarea) return;
+      textarea.__lastValueSnapshot = textarea.value || '';
+    }
+
+    function startChunkedTextareaInsert(textarea, insertedText, {
+      onChunk = null,
+      start = null,
+      end = null,
+      title = '正在分段粘贴',
+      message = '正在把大段文本分片写入输入区，请稍候。',
+      progressVerb = '粘贴',
+      cancelToast = '已取消分段粘贴，已保留当前已写入内容',
+    } = {}) {
+      if (!textarea || textarea.dataset.largePasteBusy === '1') {
+        return true;
+      }
+      if (!shouldChunkLargePaste(insertedText)) {
+        return false;
+      }
+
+      const previousReadOnly = textarea.readOnly;
+      const controller = { cancelled: false };
+      let finalInserted = 0;
+      let cancelled = false;
+      textarea.dataset.largePasteBusy = '1';
+      textarea.style.cursor = 'progress';
+      textarea.readOnly = true;
+      openLargePasteDialog({
+        total: insertedText.length,
+        onCancel: () => {
+          controller.cancelled = true;
+        },
+        title,
+        message,
+        progressVerb,
+      });
+      insertLargeTextInChunks(textarea, insertedText, {
+        onChunk(chunkInserted, total) {
+          updateLargePasteDialog(chunkInserted, total, { progressVerb });
+          if (typeof onChunk === 'function') {
+            onChunk(chunkInserted, total);
+          }
+        },
+        start,
+        end,
+        controller,
+      })
+        .then((result) => {
+          finalInserted = result?.inserted || 0;
+          cancelled = Boolean(result?.cancelled);
+          if (cancelled) {
+            showToast(cancelToast, 'error');
+          }
+        })
+        .catch((err) => alert(err?.message || '大文本写入失败'))
+        .finally(() => {
+          closeLargePasteDialog();
+          delete textarea.dataset.largePasteBusy;
+          textarea.style.cursor = '';
+          textarea.readOnly = previousReadOnly;
+          rememberTextareaSnapshot(textarea);
+          if (typeof onChunk === 'function') {
+            onChunk(cancelled ? finalInserted : insertedText.length, insertedText.length);
+          }
+        });
+      return true;
+    }
+
+    function handleLargeTextBeforeInput(event, textarea, { onChunk = null } = {}) {
+      if (!textarea) return false;
+      rememberTextareaSnapshot(textarea);
+      const inputType = event.inputType || '';
+      const insertedText = typeof event.data === 'string' ? event.data : '';
+      if (event.isComposing) return false;
+      if (!['insertText', 'insertReplacementText', 'insertFromPaste'].includes(inputType)) return false;
+      if (!shouldChunkLargePaste(insertedText)) return false;
+      event.preventDefault();
+      return startChunkedTextareaInsert(textarea, insertedText, {
+        onChunk,
+        title: '正在分段写入',
+        message: '正在把大段文本分片写入输入区，请稍候。',
+        progressVerb: '写入',
+        cancelToast: '已取消分段写入，已保留当前已写入内容',
+      });
+    }
+
+    function handleLargeTextInputFallback(textarea, { onChunk = null } = {}) {
+      if (!textarea || textarea.dataset.largePasteBusy === '1') {
+        rememberTextareaSnapshot(textarea);
+        return false;
+      }
+      const previousValue = textarea.__lastValueSnapshot ?? '';
+      const nextValue = textarea.value || '';
+      rememberTextareaSnapshot(textarea);
+      if (nextValue.length - previousValue.length < LARGE_PASTE_THRESHOLD) {
+        return false;
+      }
+      replaceTextareaValueWithProgress(textarea, nextValue, {
+        title: '正在分段写入',
+        message: '正在把大段文本分片写入输入区，请稍候。',
+        progressVerb: '写入',
+        cancelToast: '已取消分段写入，已恢复写入前内容',
+        restoreOnCancel: true,
+      }).then(() => {
+        if (typeof onChunk === 'function') {
+          onChunk(nextValue.length, nextValue.length);
+        }
+      }).catch((err) => alert(err?.message || '大文本写入失败'));
+      return true;
+    }
+
     async function insertLargeTextInChunks(textarea, text, { onChunk = null, start = null, end = null, controller = null } = {}) {
       const initialValue = textarea.value || '';
       const safeStart = Number.isFinite(start) ? start : (textarea.selectionStart ?? initialValue.length);
@@ -3427,55 +3549,16 @@
       if (!shouldChunkLargePaste(pastedText)) {
         return false;
       }
-
       event.preventDefault();
-      const start = textarea.selectionStart ?? textarea.value.length;
-      const end = textarea.selectionEnd ?? textarea.value.length;
-      const previousReadOnly = textarea.readOnly;
-      const controller = { cancelled: false };
-      let finalInserted = 0;
-      let cancelled = false;
-      textarea.dataset.largePasteBusy = '1';
-      textarea.style.cursor = 'progress';
-      textarea.readOnly = true;
-      openLargePasteDialog({
-        total: pastedText.length,
-        onCancel: () => {
-          controller.cancelled = true;
-        },
+      return startChunkedTextareaInsert(textarea, pastedText, {
+        onChunk,
+        start: textarea.selectionStart ?? textarea.value.length,
+        end: textarea.selectionEnd ?? textarea.value.length,
         title: '正在分段粘贴',
         message: '正在把大段文本分片写入输入区，请稍候。',
         progressVerb: '粘贴',
+        cancelToast: '已取消分段粘贴，已保留当前已写入内容',
       });
-      insertLargeTextInChunks(textarea, pastedText, {
-        onChunk(inserted, total) {
-          updateLargePasteDialog(inserted, total, { progressVerb: '粘贴' });
-          if (typeof onChunk === 'function') {
-            onChunk(inserted, total);
-          }
-        },
-        start,
-        end,
-        controller,
-      })
-        .then((result) => {
-          finalInserted = result?.inserted || 0;
-          cancelled = Boolean(result?.cancelled);
-          if (cancelled) {
-            showToast('已取消分段粘贴，已保留当前已写入内容', 'error');
-          }
-        })
-        .catch((err) => alert(err?.message || '大文本粘贴失败'))
-        .finally(() => {
-          closeLargePasteDialog();
-          delete textarea.dataset.largePasteBusy;
-          textarea.style.cursor = '';
-          textarea.readOnly = previousReadOnly;
-          if (typeof onChunk === 'function') {
-            onChunk(cancelled ? finalInserted : pastedText.length, pastedText.length);
-          }
-        });
-      return true;
     }
 
     function getTextPreview(text) {
@@ -4825,9 +4908,16 @@
       textarea.setAttribute('autocorrect', 'off');
       textarea.setAttribute('autocomplete', 'off');
       textarea.setAttribute('autocapitalize', 'off');
+      textarea.addEventListener('beforeinput', (event) => {
+        handleLargeTextBeforeInput(event, textarea);
+      });
       textarea.addEventListener('paste', (event) => {
         handleLargeTextPaste(event, textarea);
       });
+      textarea.addEventListener('input', () => {
+        handleLargeTextInputFallback(textarea);
+      });
+      textarea.addEventListener('focus', () => rememberTextareaSnapshot(textarea));
       stage.appendChild(textarea);
       mediaStage.appendChild(stage);
       activeEditorState = { textarea, resizeObserver: null };
@@ -5217,7 +5307,7 @@
       const cached = getRememberedPassword();
       if (!cached) return false;
       if (autoReauthPromise) return autoReauthPromise;
-      prepareLoginMaskWithRememberedPassword();
+      prepareLoginMaskWithRememberedPassword({ show: false });
       autoReauthPromise = requestAuth(cached)
         .then(async (data) => {
           await finalizeLogin(data, { rememberChoice: true, hydrate: true, reloadMessages: false, clearInput: false, password: cached });
@@ -5849,18 +5939,13 @@
       const knownRevision = pendingRevision || lastAppliedRevision;
       if (knownRevision) headers['If-None-Match'] = knownRevision;
 
-      const res = await fetch('/api/messages', { headers });
+      const res = await authorizedFetch('/api/messages', { headers });
       if (requestSeq < latestHandledMessageRequestSeq) {
         return;
       }
       if (res.status === 304) {
         latestHandledMessageRequestSeq = Math.max(latestHandledMessageRequestSeq, requestSeq);
         return;
-      }
-      if (res.status === 401) {
-        token = '';
-        loginMask.classList.remove('hidden');
-        throw new Error('未授权');
       }
       if (!res.ok) {
         let msg = `请求失败: ${res.status}`;
@@ -6618,7 +6703,23 @@
       };
     });
 
-    textInput.addEventListener('input', syncInputVirtualization);
+    textInput.addEventListener('beforeinput', (event) => {
+      handleLargeTextBeforeInput(event, textInput, {
+        onChunk: () => requestAnimationFrame(syncInputVirtualization),
+      });
+    });
+    textInput.addEventListener('input', () => {
+      if (!handleLargeTextInputFallback(textInput, {
+        onChunk: () => requestAnimationFrame(syncInputVirtualization),
+      })) {
+        syncInputVirtualization();
+      }
+    });
+    textInput.addEventListener('focus', () => {
+      rememberTextareaSnapshot(textInput);
+      syncInputVirtualization();
+      syncInputScrollIndicator(true);
+    });
     textInput.addEventListener('pointerdown', () => {
       textInputStage.classList.add('mirror-disabled');
       showInputScrollIndicator();
@@ -6638,10 +6739,6 @@
     textInput.addEventListener('keyup', () => {
       syncInputVirtualization();
       syncInputScrollIndicator(false);
-    });
-    textInput.addEventListener('focus', () => {
-      syncInputVirtualization();
-      syncInputScrollIndicator(true);
     });
     textInput.addEventListener('blur', () => {
       syncInputVirtualization();
@@ -6757,16 +6854,12 @@
     bindChatScrollIndicatorDrag();
     bindInputScrollIndicatorDrag();
     bindResizeGrip(chatResizeGrip, chat, {
-      minHeight: 220,
-      maxHeight: window.innerHeight * 0.86,
       onUpdate: () => {
         syncChatScrollIndicator(true);
         scheduleChatViewportRender();
       },
     });
     bindResizeGrip(inputResizeGrip, textInput, {
-      minHeight: 110,
-      maxHeight: Math.max(180, window.innerHeight * 0.55),
       onUpdate: () => {
         syncInputVirtualization();
         syncInputScrollIndicator(true);

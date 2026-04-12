@@ -275,6 +275,13 @@ fn create_token() -> String {
         .collect()
 }
 
+fn ensure_generated_token_shape(value: &str, label: &str) -> Result<(), AppError> {
+    if value.len() != 48 || !value.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, format!("{label} 无效")));
+    }
+    Ok(())
+}
+
 fn user_id_from_password(password: &str) -> String {
     let digest = sha256_hex(password.as_bytes());
     format!("u_{}", &digest[..16])
@@ -1022,14 +1029,14 @@ async fn update_ui_state(
 
     let conn = open_conn(&state.db_path)?;
     if let Some(height) = payload.chat_height_px {
-        if !(320..=2000).contains(&height) {
-            return Err(AppError::new(StatusCode::BAD_REQUEST, "聊天区高度超出范围"));
+        if height <= 0 {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "聊天区高度无效"));
         }
         set_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "chat_height_px"), height)?;
     }
     if let Some(height) = payload.input_height_px {
-        if !(110..=900).contains(&height) {
-            return Err(AppError::new(StatusCode::BAD_REQUEST, "输入框高度超出范围"));
+        if height <= 0 {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "输入框高度无效"));
         }
         set_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "input_height_px"), height)?;
     }
@@ -1075,6 +1082,7 @@ async fn get_video_progress(
     AxumPath(file_id): AxumPath<String>,
 ) -> Result<Json<VideoProgressResponse>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    ensure_generated_token_shape(&file_id, "file_id")?;
 
     let conn = open_conn(&state.db_path)?;
     ensure_file_belongs_to_user(&conn, &auth.user_id, &file_id)?;
@@ -1098,6 +1106,7 @@ async fn update_video_progress(
     Json(payload): Json<VideoProgressRequest>,
 ) -> Result<Json<VideoProgressResponse>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    ensure_generated_token_shape(&file_id, "file_id")?;
 
     if !payload.position_seconds.is_finite() || payload.position_seconds < 0.0 {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "播放进度无效"));
@@ -1455,6 +1464,7 @@ async fn upload_chunk(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
         .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "缺少 x-upload-id"))?;
+    ensure_generated_token_shape(&upload_id, "upload_id")?;
     let start_byte = headers
         .get("x-start-byte")
         .and_then(|v| v.to_str().ok())
@@ -1596,6 +1606,7 @@ async fn complete_upload(
     Json(payload): Json<UploadCompleteRequest>,
 ) -> Result<Json<MessageDto>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    ensure_generated_token_shape(&payload.upload_id, "upload_id")?;
 
     let mut conn = open_conn(&state.db_path)?;
     let (file_name, file_size, mime_type, received_bytes, temp_path, status): (
@@ -1714,6 +1725,7 @@ async fn cancel_upload(
     Json(payload): Json<UploadCancelRequest>,
 ) -> Result<Json<UploadCancelResponse>, AppError> {
     let auth = require_auth(&headers, &state).await?;
+    ensure_generated_token_shape(&payload.upload_id, "upload_id")?;
 
     let conn = open_conn(&state.db_path)?;
     let temp_path: Option<String> = conn
@@ -1837,6 +1849,7 @@ async fn direct_file(
     let auth = require_auth(&headers, &state).await?;
     let file_id = path.file_id;
     let _display_name = path.display_name;
+    ensure_generated_token_shape(&file_id, "file_id")?;
 
     let (file_name, mime_type): (String, String) = {
         let conn = open_conn(&state.db_path)?;
@@ -1930,6 +1943,7 @@ async fn direct_thumbnail(
 ) -> Result<Response, AppError> {
     let auth = require_auth(&headers, &state).await?;
     let file_id = path.file_id;
+    ensure_generated_token_shape(&file_id, "file_id")?;
 
     let mime_type: String = {
         let conn = open_conn(&state.db_path)?;
