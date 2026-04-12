@@ -302,6 +302,12 @@
       align-items: center;
       margin-bottom: 4px;
     }
+    .bubble-head-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     .bubble-title {
       font-size: 13px;
       font-weight: 600;
@@ -310,7 +316,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .bubble-copy-btn {
+    .bubble-action-btn {
       padding: 4px 8px;
       font-size: 12px;
       min-height: auto;
@@ -661,6 +667,7 @@
       justify-content: center;
       padding: 0;
       box-sizing: border-box;
+      touch-action: manipulation;
     }
     .editor-launch-btn svg {
       width: 16px;
@@ -3045,6 +3052,28 @@
       return text;
     }
 
+    function getTextMessageExportUrl(messageId) {
+      return `/api/messages/${encodeURIComponent(String(messageId))}/export.txt`;
+    }
+
+    async function downloadTextMessageAsFile(messageId) {
+      const res = await authorizedFetch(getTextMessageExportUrl(messageId));
+      if (!res.ok) {
+        throw new Error(`导出失败: ${res.status}`);
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const fileName = disposition.match(/filename="([^"]+)"/i)?.[1] || `message-${messageId}.txt`;
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    }
+
     function isPlainFileMessage(msg) {
       return msg?.kind === 'file' && !getMessageMediaKind(msg) && !isTextLikeFileMessage(msg);
     }
@@ -3288,6 +3317,18 @@
         content: inputVirtualContent,
         alwaysMirror: false,
       }, { force: Boolean(activeEditorState) });
+    }
+
+    let openDraftEditorBusy = false;
+
+    async function triggerOpenDraftEditor() {
+      if (openDraftEditorBusy) return;
+      openDraftEditorBusy = true;
+      try {
+        await openDraftEditor();
+      } finally {
+        openDraftEditorBusy = false;
+      }
     }
 
     function shouldChunkLargePaste(text) {
@@ -4748,6 +4789,7 @@
           restoreOnCancel: true,
         });
         if (result?.cancelled) {
+          resetMediaDialogLayout();
           mediaStage.innerHTML = '';
           activeEditorState = null;
           currentViewerMode = 'media';
@@ -5136,7 +5178,7 @@
       return autoReauthPromise;
     }
 
-    async function api(path, options = {}) {
+    async function authorizedFetch(path, options = {}) {
       const cfg = { ...options };
       cfg.headers = { ...(options.headers || {}) };
       if (token) cfg.headers.Authorization = `Bearer ${token}`;
@@ -5155,6 +5197,11 @@
         prepareLoginMaskWithRememberedPassword();
         throw new Error('未授权');
       }
+      return res;
+    }
+
+    async function api(path, options = {}) {
+      const res = await authorizedFetch(path, options);
       if (!res.ok) {
         let msg = `请求失败: ${res.status}`;
         try {
@@ -5202,8 +5249,11 @@
         spacer.textContent = '文本';
         spacer.style.visibility = 'hidden';
 
+        const actions = document.createElement('div');
+        actions.className = 'bubble-head-actions';
+
         const copyBtn = document.createElement('button');
-        copyBtn.className = 'bubble-copy-btn';
+        copyBtn.className = 'bubble-action-btn bubble-copy-btn';
         copyBtn.textContent = '复制';
         copyBtn.onclick = async () => {
           try {
@@ -5214,8 +5264,22 @@
           }
         };
 
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'bubble-action-btn';
+        exportBtn.textContent = '导出为文件';
+        exportBtn.onclick = async () => {
+          try {
+            await downloadTextMessageAsFile(msg.id);
+            showToast('已导出 TXT');
+          } catch (err) {
+            showToast(err.message || '导出失败', 'error');
+          }
+        };
+
         head.appendChild(spacer);
-        head.appendChild(copyBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(exportBtn);
+        head.appendChild(actions);
         bubble.appendChild(head);
 
         const textBody = document.createElement('div');
@@ -5369,13 +5433,24 @@
       return row;
     }
 
-    function copyRawText(value) {
+    async function copyRawText(value) {
+      const text = String(value ?? '');
+      if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        try {
+          const item = new ClipboardItem({
+            'text/plain': new Blob([text], { type: 'text/plain;charset=utf-8' }),
+          });
+          await navigator.clipboard.write([item]);
+          return;
+        } catch (_) {}
+      }
       if (navigator.clipboard?.writeText) {
-        return navigator.clipboard.writeText(value);
+        await navigator.clipboard.writeText(text);
+        return;
       }
 
       const temp = document.createElement('textarea');
-      temp.value = value;
+      temp.value = text;
       temp.style.position = 'fixed';
       temp.style.opacity = '0';
       document.body.appendChild(temp);
@@ -5386,7 +5461,7 @@
       if (!ok) {
         throw new Error('复制失败');
       }
-      return Promise.resolve();
+      return;
     }
 
     function renderMessages({ followBottom = false, preserveScroll = true } = {}) {
@@ -6381,7 +6456,17 @@
     loginBtn.onclick = login;
     logoutBtn.onclick = () => handleLogoutClick().catch((e) => alert(e.message));
     sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
-    openEditorBtn.onclick = () => openDraftEditor().catch((e) => alert(e.message));
+    let openEditorPointerHandledAt = 0;
+    openEditorBtn.onclick = () => {
+      if (Date.now() - openEditorPointerHandledAt < 400) return;
+      triggerOpenDraftEditor().catch((e) => alert(e.message));
+    };
+    openEditorBtn.addEventListener('pointerup', (event) => {
+      if (event.pointerType !== 'touch') return;
+      openEditorPointerHandledAt = Date.now();
+      event.preventDefault();
+      triggerOpenDraftEditor().catch((e) => alert(e.message));
+    });
 
     plusMenuBtn.onclick = () => {
       toggleFilterMenu(false);

@@ -1163,6 +1163,37 @@ async fn update_text_progress(
     }))
 }
 
+async fn export_text_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(message_id): AxumPath<i64>,
+) -> Result<Response, AppError> {
+    let auth = require_auth(&headers, &state).await?;
+    let conn = open_conn(&state.db_path)?;
+    let (kind, text): (String, String) = conn
+        .query_row(
+            "SELECT kind, COALESCE(text_content, '') FROM messages WHERE id = ?1 AND user_id = ?2",
+            params![message_id, auth.user_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "消息不存在"))?;
+    if kind != "text" {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "仅支持导出纯文本消息"));
+    }
+
+    let mut resp = Response::new(Body::from(text.into_bytes()));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    let dispo = format!("attachment; filename=\"message-{message_id}.txt\"");
+    resp.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&dispo).unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+    );
+    Ok(resp)
+}
+
 async fn create_text_message(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2045,6 +2076,7 @@ async fn run() -> Result<(), AppError> {
         .route("/api/video-progress/:file_id", get(get_video_progress).put(update_video_progress))
         .route("/api/text-progress/:message_id", get(get_text_progress).put(update_text_progress))
         .route("/api/messages", get(list_messages).delete(delete_messages))
+        .route("/api/messages/:message_id/export.txt", get(export_text_message))
         .route("/api/messages/text", post(create_text_message))
         .route("/api/messages/file", post(create_file_message))
         .route("/api/uploads/init", post(init_upload))
