@@ -1810,6 +1810,7 @@
     const confirmCancelBtn = document.getElementById('confirmCancelBtn');
     const confirmActionBtn = document.getElementById('confirmActionBtn');
     const largePasteOverlay = document.getElementById('largePasteOverlay');
+    const largePasteTitle = document.getElementById('largePasteTitle');
     const largePasteMessage = document.getElementById('largePasteMessage');
     const largePasteProgressFill = document.getElementById('largePasteProgressFill');
     const largePasteProgressMeta = document.getElementById('largePasteProgressMeta');
@@ -3158,11 +3159,11 @@
       };
     }
 
-    function updateLargePasteDialog(inserted, total) {
+    function updateLargePasteDialog(inserted, total, { progressVerb = '粘贴' } = {}) {
       if (!largePasteOverlay || !largePasteProgressFill || !largePasteProgressMeta) return;
       const progress = formatLargePasteProgress(inserted, total);
       largePasteProgressFill.style.width = `${progress.percent}%`;
-      largePasteProgressMeta.textContent = `当前正在粘贴第 ${progress.currentChunk} / ${progress.totalChunks} 片`;
+      largePasteProgressMeta.textContent = `当前正在${progressVerb}第 ${progress.currentChunk} / ${progress.totalChunks} 片`;
     }
 
     function closeLargePasteDialog() {
@@ -3170,14 +3171,60 @@
       activeLargePasteSession = null;
     }
 
-    function openLargePasteDialog({ total, onCancel }) {
+    function openLargePasteDialog({ total, onCancel, title = '正在分段粘贴', message = '正在把大段文本分片写入输入区，请稍候。', progressVerb = '粘贴' }) {
       activeLargePasteSession = { onCancel };
-      if (largePasteMessage) {
-        largePasteMessage.textContent = '正在把大段文本分片写入输入区，请稍候。';
+      if (largePasteTitle) {
+        largePasteTitle.textContent = title;
       }
-      updateLargePasteDialog(0, total);
+      if (largePasteMessage) {
+        largePasteMessage.textContent = message;
+      }
+      updateLargePasteDialog(0, total, { progressVerb });
       largePasteOverlay?.classList.remove('hidden');
       requestAnimationFrame(() => largePasteCancelBtn?.focus());
+    }
+
+    async function replaceTextareaValueWithProgress(textarea, text, {
+      title = '正在分段粘贴',
+      message = '正在把大段文本分片写入输入区，请稍候。',
+      progressVerb = '粘贴',
+      cancelToast = '已取消分段粘贴，已保留当前已写入内容',
+      restoreOnCancel = false,
+    } = {}) {
+      const previousReadOnly = textarea.readOnly;
+      const previousValue = textarea.value || '';
+      const controller = { cancelled: false };
+      let finalInserted = 0;
+      let cancelled = false;
+      textarea.dataset.largePasteBusy = '1';
+      textarea.style.cursor = 'progress';
+      textarea.readOnly = true;
+      openLargePasteDialog({ total: text.length, onCancel: () => { controller.cancelled = true; }, title, message, progressVerb });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      try {
+        const result = await insertLargeTextInChunks(textarea, text, {
+          start: 0,
+          end: previousValue.length,
+          controller,
+          onChunk(inserted, total) {
+            updateLargePasteDialog(inserted, total, { progressVerb });
+          },
+        });
+        finalInserted = result?.inserted || 0;
+        cancelled = Boolean(result?.cancelled);
+        if (cancelled) {
+          if (restoreOnCancel) {
+            textarea.value = previousValue;
+          }
+          showToast(cancelToast, 'error');
+        }
+        return { cancelled, inserted: finalInserted };
+      } finally {
+        closeLargePasteDialog();
+        delete textarea.dataset.largePasteBusy;
+        textarea.style.cursor = '';
+        textarea.readOnly = previousReadOnly;
+      }
     }
 
     function toggleFilterMenu(force) {
@@ -3303,10 +3350,13 @@
         onCancel: () => {
           controller.cancelled = true;
         },
+        title: '正在分段粘贴',
+        message: '正在把大段文本分片写入输入区，请稍候。',
+        progressVerb: '粘贴',
       });
       insertLargeTextInChunks(textarea, pastedText, {
         onChunk(inserted, total) {
-          updateLargePasteDialog(inserted, total);
+          updateLargePasteDialog(inserted, total, { progressVerb: '粘贴' });
           if (typeof onChunk === 'function') {
             onChunk(inserted, total);
           }
@@ -4655,7 +4705,7 @@
       state.viewerChrome?.syncIndicators(false);
     }
 
-    function openDraftEditor() {
+    async function openDraftEditor() {
       cleanupActiveAudioVisualizer();
       cleanupActiveAudioShell();
       resetMediaDialogLayout();
@@ -4677,7 +4727,6 @@
 
       const textarea = document.createElement('textarea');
       textarea.className = 'draft-editor-textarea';
-      textarea.value = textInput.value;
       textarea.placeholder = '在这里整理长文本草稿，关闭后带回下方输入框';
       textarea.spellcheck = false;
       textarea.setAttribute('autocorrect', 'off');
@@ -4689,6 +4738,31 @@
       stage.appendChild(textarea);
       mediaStage.appendChild(stage);
       activeEditorState = { textarea, resizeObserver: null };
+      const openingEditorText = textInput.value;
+      if (shouldChunkLargePaste(openingEditorText)) {
+        const result = await replaceTextareaValueWithProgress(textarea, openingEditorText, {
+          title: '正在同步草稿',
+          message: '正在把输入框内容分片写入草稿编辑器，请稍候。',
+          progressVerb: '同步',
+          cancelToast: '已取消同步，仍停留在输入框',
+          restoreOnCancel: true,
+        });
+        if (result?.cancelled) {
+          mediaStage.innerHTML = '';
+          activeEditorState = null;
+          currentViewerMode = 'media';
+          requestAnimationFrame(() => {
+            textInput.focus();
+            const caret = textInput.value.length;
+            textInput.setSelectionRange(caret, caret);
+            syncInputVirtualization();
+            syncInputScrollIndicator(true);
+          });
+          return;
+        }
+      } else {
+        textarea.value = openingEditorText;
+      }
       mediaViewer.classList.remove('hidden');
       requestAnimationFrame(() => textarea.focus());
     }
@@ -5002,7 +5076,7 @@
       return allMessages.filter((msg) => matchesCurrentFilter(msg) && matchesSearchQuery(msg));
     }
 
-    async function finalizeLogin(data, { rememberChoice = rememberPassword.checked, hydrate = true, clearInput = true, password = passwordInput.value } = {}) {
+    async function finalizeLogin(data, { rememberChoice = rememberPassword.checked, hydrate = true, reloadMessages = true, clearInput = true, password = passwordInput.value } = {}) {
       token = data.token;
       activeUserId = data.user_id || '';
       try {
@@ -5020,6 +5094,10 @@
       if (!hydrate) return;
       const uiState = await fetchUiState();
       applyUiState(uiState);
+      if (!reloadMessages) {
+        updateScrollButtonState();
+        return;
+      }
       await loadMessages({ source: 'login', followBottom: true, preserveScroll: false });
       updateScrollButtonState();
     }
@@ -5048,7 +5126,7 @@
       prepareLoginMaskWithRememberedPassword();
       autoReauthPromise = requestAuth(cached)
         .then(async (data) => {
-          await finalizeLogin(data, { rememberChoice: true, hydrate: false, clearInput: false, password: cached });
+          await finalizeLogin(data, { rememberChoice: true, hydrate: true, reloadMessages: false, clearInput: false, password: cached });
           return true;
         })
         .catch(() => false)
@@ -5539,9 +5617,28 @@
       await persistActiveTextViewerProgress();
       cleanupActiveAudioVisualizer();
       cleanupActiveAudioShell();
-      resetMediaDialogLayout();
       if (closingEditorText != null) {
-        textInput.value = closingEditorText;
+        if (shouldChunkLargePaste(closingEditorText)) {
+          const result = await replaceTextareaValueWithProgress(textInput, closingEditorText, {
+            title: '正在同步草稿',
+            message: '正在把草稿内容分片写回输入框，请稍候。',
+            progressVerb: '同步',
+            cancelToast: '已取消同步，草稿编辑器仍保持打开',
+            restoreOnCancel: true,
+          });
+          if (result?.cancelled) {
+            setTimeout(() => {
+              const editorTextarea = activeEditorState?.textarea;
+              if (!editorTextarea) return;
+              editorTextarea.focus();
+              const caret = editorTextarea.value.length;
+              editorTextarea.setSelectionRange(caret, caret);
+            }, 0);
+            return;
+          }
+        } else {
+          textInput.value = closingEditorText;
+        }
         textInputStage.classList.add('mirror-disabled');
         requestAnimationFrame(() => {
           textInput.focus();
@@ -5550,6 +5647,7 @@
           syncInputVirtualization();
         });
       }
+      resetMediaDialogLayout();
       appPage.classList.remove('modal-scroll-lock');
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
@@ -6283,7 +6381,7 @@
     loginBtn.onclick = login;
     logoutBtn.onclick = () => handleLogoutClick().catch((e) => alert(e.message));
     sendTextBtn.onclick = () => sendText().catch((e) => alert(e.message));
-    openEditorBtn.onclick = () => openDraftEditor();
+    openEditorBtn.onclick = () => openDraftEditor().catch((e) => alert(e.message));
 
     plusMenuBtn.onclick = () => {
       toggleFilterMenu(false);
