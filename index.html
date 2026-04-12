@@ -385,6 +385,7 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      pointer-events: none;
     }
     .scroll-fab {
       width: 38px;
@@ -399,6 +400,7 @@
       background: rgba(255, 255, 255, .92);
       backdrop-filter: blur(10px);
       border-color: #cfd9eb;
+      pointer-events: auto;
     }
     .chat-scroll-indicator {
       position: absolute;
@@ -1444,7 +1446,12 @@
         grid-template-columns: repeat(2, minmax(120px, 1fr));
       }
       .scroll-fab-group {
+        left: auto;
         right: 8px;
+        top: auto;
+        bottom: 88px;
+        transform: none;
+        width: auto;
       }
       button, input[type="file"], select {
         min-height: 38px;
@@ -2759,7 +2766,7 @@
         window.removeEventListener('pointermove', moveHandler, true);
         window.removeEventListener('pointerup', upHandler, true);
         window.removeEventListener('pointercancel', upHandler, true);
-        scheduleUiStateSave();
+        saveCurrentSizeUiState().catch(() => {});
         updateResetSizeButtonState();
       };
       grip.addEventListener('pointerdown', (event) => {
@@ -2784,6 +2791,17 @@
       scrollFabGroup.classList.toggle('hidden', shouldShow);
       scrollTopBtn.disabled = isChatNearTop();
       scrollBottomBtn.disabled = isChatNearBottom();
+    }
+
+    function bindBubbleViewerFallback(bubble, msg) {
+      bubble.style.cursor = 'pointer';
+      bubble.addEventListener('click', (event) => {
+        if (event.defaultPrevented) return;
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest('a, button, input, select, textarea, label')) return;
+        openMediaByMessageId(msg.id).catch(() => {});
+      });
     }
 
     function applyUiState({ chat_height_px, input_height_px, text_wrap_enabled, text_zoom_scale }) {
@@ -2814,14 +2832,28 @@
       });
     }
 
+    function buildSizeUiStatePayload() {
+      return {
+        chat_height_px: Math.round(chat.getBoundingClientRect().height),
+        input_height_px: Math.round(textInput.getBoundingClientRect().height),
+      };
+    }
+
+    async function saveCurrentSizeUiState() {
+      if (suppressUiResizeSave || !token || manageMode) return;
+      if (uiStateSaveTimer) {
+        clearTimeout(uiStateSaveTimer);
+        uiStateSaveTimer = 0;
+      }
+      await saveUiState(buildSizeUiStatePayload());
+    }
+
     function scheduleUiStateSave() {
       if (suppressUiResizeSave || !token || manageMode) return;
       if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
       uiStateSaveTimer = setTimeout(() => {
-        saveUiState({
-          chat_height_px: Math.round(chat.getBoundingClientRect().height),
-          input_height_px: Math.round(textInput.getBoundingClientRect().height),
-        }).catch(() => {});
+        uiStateSaveTimer = 0;
+        saveUiState(buildSizeUiStatePayload()).catch(() => {});
       }, 400);
     }
 
@@ -4976,8 +5008,12 @@
           const viewerBtn = document.createElement('button');
           viewerBtn.className = 'bubble-open-viewer-btn';
           viewerBtn.textContent = '查看更多';
-          viewerBtn.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+          viewerBtn.onclick = (event) => {
+            event?.stopPropagation?.();
+            openMediaByMessageId(msg.id).catch(() => {});
+          };
           bubble.appendChild(viewerBtn);
+          bindBubbleViewerFallback(bubble, msg);
         }
       } else {
         const head = document.createElement('div');
@@ -5024,8 +5060,12 @@
           } else {
             attachImageCompatibility(img, msg, true);
           }
-          img.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+          img.onclick = (event) => {
+            event?.stopPropagation?.();
+            openMediaByMessageId(msg.id).catch(() => {});
+          };
           bubble.appendChild(img);
+          bindBubbleViewerFallback(bubble, msg);
         } else if ((msg.mime_type || '').startsWith('video/')) {
           if (msg.thumbnail_url) {
             const thumb = document.createElement('img');
@@ -5047,12 +5087,16 @@
               attachVideoCompatibility(video, msg, true);
               video.onclick = (e) => {
                 e.preventDefault();
+                e.stopPropagation?.();
                 video.pause();
                 openMediaByMessageId(msg.id).catch(() => {});
               };
               thumb.replaceWith(video);
             }, { once: true });
-            thumb.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+            thumb.onclick = (event) => {
+              event?.stopPropagation?.();
+              openMediaByMessageId(msg.id).catch(() => {});
+            };
             bubble.appendChild(thumb);
           } else {
             const video = document.createElement('video');
@@ -5067,23 +5111,33 @@
             attachVideoCompatibility(video, msg, true);
             video.onclick = (e) => {
               e.preventDefault();
+              e.stopPropagation?.();
               video.pause();
               openMediaByMessageId(msg.id).catch(() => {});
             };
             bubble.appendChild(video);
           }
+          bindBubbleViewerFallback(bubble, msg);
         } else if ((msg.mime_type || '').startsWith('audio/')) {
           const card = createAudioCard(msg, { compact: true });
           enhanceAudioCard(card, msg);
           card.title = '点击进入音频播放页';
-          card.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+          card.onclick = (event) => {
+            event?.stopPropagation?.();
+            openMediaByMessageId(msg.id).catch(() => {});
+          };
           bubble.appendChild(card);
+          bindBubbleViewerFallback(bubble, msg);
         } else if (isTextLikeFileMessage(msg)) {
           const viewerBtn = document.createElement('button');
           viewerBtn.className = 'bubble-open-viewer-btn';
           viewerBtn.textContent = '打开文本';
-          viewerBtn.onclick = () => openMediaByMessageId(msg.id).catch(() => {});
+          viewerBtn.onclick = (event) => {
+            event?.stopPropagation?.();
+            openMediaByMessageId(msg.id).catch(() => {});
+          };
           bubble.appendChild(viewerBtn);
+          bindBubbleViewerFallback(bubble, msg);
         }
       }
 
@@ -5197,7 +5251,7 @@
         });
         appPage.classList.add('modal-scroll-lock');
         mediaViewer.classList.remove('hidden');
-        syncMediaHistoryContext(true);
+        syncMediaHistoryContext(false);
         requestAnimationFrame(() => mediaDialog.focus());
       }
 
@@ -5323,7 +5377,7 @@
 
       appPage.classList.add('modal-scroll-lock');
       mediaViewer.classList.remove('hidden');
-      syncMediaHistoryContext(true);
+      syncMediaHistoryContext(false);
       requestAnimationFrame(() => mediaDialog.focus());
     }
 
@@ -6293,7 +6347,10 @@
 
     chat.addEventListener('scroll', () => {
       scheduleChatScrollSettle();
-      scheduleChatViewportRender();
+      const chatState = ensureChatVirtualState();
+      if (chatState.shouldVirtualize || getVisibleMessages().length >= CHAT_VIRTUALIZE_THRESHOLD) {
+        scheduleChatViewportRender();
+      }
       updateScrollButtonState();
       syncChatScrollIndicator(true);
       if (pendingMessages && isChatNearBottom()) {

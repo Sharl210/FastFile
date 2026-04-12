@@ -380,6 +380,21 @@ fn user_scoped_key(user_id: &str, key: &str) -> String {
     format!("{user_id}:{key}")
 }
 
+fn get_user_agent_scope(headers: &HeaderMap) -> String {
+    let raw = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("ua:missing");
+    let digest = Sha256::digest(raw.as_bytes());
+    format!("ua:{}", hex::encode(digest))
+}
+
+fn user_ua_scoped_key(user_id: &str, headers: &HeaderMap, key: &str) -> String {
+    format!("{user_id}:{}:{key}", get_user_agent_scope(headers))
+}
+
 fn messages_revision_meta_key(user_id: &str) -> String {
     user_scoped_key(user_id, MESSAGES_REVISION_KEY)
 }
@@ -991,8 +1006,8 @@ async fn get_ui_state(
 
     let conn = open_conn(&state.db_path)?;
     Ok(Json(UiStateResponse {
-        chat_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"))?,
-        input_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "input_height_px"))?,
+        chat_height_px: get_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "chat_height_px"))?,
+        input_height_px: get_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "input_height_px"))?,
         text_wrap_enabled: get_ui_state_bool(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"))?,
         text_zoom_scale: get_ui_state_f64(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"))?,
     }))
@@ -1010,13 +1025,13 @@ async fn update_ui_state(
         if !(320..=2000).contains(&height) {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "聊天区高度超出范围"));
         }
-        set_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"), height)?;
+        set_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "chat_height_px"), height)?;
     }
     if let Some(height) = payload.input_height_px {
         if !(110..=900).contains(&height) {
             return Err(AppError::new(StatusCode::BAD_REQUEST, "输入框高度超出范围"));
         }
-        set_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "input_height_px"), height)?;
+        set_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "input_height_px"), height)?;
     }
     if let Some(enabled) = payload.text_wrap_enabled {
         set_ui_state_bool(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"), enabled)?;
@@ -1029,8 +1044,8 @@ async fn update_ui_state(
     }
 
     Ok(Json(UiStateResponse {
-        chat_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"))?,
-        input_height_px: get_ui_state_value(&conn, &user_scoped_key(&auth.user_id, "input_height_px"))?,
+        chat_height_px: get_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "chat_height_px"))?,
+        input_height_px: get_ui_state_value(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "input_height_px"))?,
         text_wrap_enabled: get_ui_state_bool(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"))?,
         text_zoom_scale: get_ui_state_f64(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"))?,
     }))
@@ -1042,8 +1057,8 @@ async fn reset_ui_state(
 ) -> Result<Json<UiStateResponse>, AppError> {
     let auth = require_auth(&headers, &state).await?;
     let conn = open_conn(&state.db_path)?;
-    delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "chat_height_px"))?;
-    delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "input_height_px"))?;
+    delete_ui_state_key(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "chat_height_px"))?;
+    delete_ui_state_key(&conn, &user_ua_scoped_key(&auth.user_id, &headers, "input_height_px"))?;
     delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "text_wrap_enabled"))?;
     delete_ui_state_key(&conn, &user_scoped_key(&auth.user_id, "text_zoom_scale"))?;
     Ok(Json(UiStateResponse {
