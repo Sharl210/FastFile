@@ -1132,6 +1132,29 @@
       background: rgba(29, 78, 216, 0.92);
       box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.18);
     }
+    .viewer-loading {
+      min-height: min(52vh, 420px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .viewer-loading-spinner {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid rgba(29, 114, 255, 0.18);
+      border-top-color: rgba(29, 114, 255, 0.9);
+      animation: viewer-spin .72s linear infinite;
+    }
+    @keyframes viewer-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
     .image-viewer-canvas {
       min-width: 100%;
       min-height: 100%;
@@ -1163,7 +1186,7 @@
       white-space: pre-wrap;
       word-break: break-word;
       overscroll-behavior: contain;
-      touch-action: none;
+      touch-action: pan-x pan-y;
     }
     .text-viewer-stage.wrap-disabled {
       white-space: pre;
@@ -1831,9 +1854,10 @@
     const TEXT_VIEWER_PRELOAD_BEFORE = 2;
     const TEXT_VIEWER_PRELOAD_AFTER = 4;
     const CHAT_ITEM_GAP = 10;
-    const CHAT_VIRTUALIZE_THRESHOLD = 20;
+    const CHAT_VIRTUALIZE_THRESHOLD = 60;
     const CHAT_VIRTUAL_PRELOAD_BEFORE = 8;
     const CHAT_VIRTUAL_PRELOAD_AFTER = 14;
+    const SCROLL_SETTLE_MS = 120;
     const VIRTUAL_RETENTION_TTL = 600_000;
     const VIRTUAL_RETENTION_TICK_MS = 30_000;
     const VIEWER_INDICATOR_IDLE_MS = 3000;
@@ -2213,6 +2237,7 @@
         rowResizeObserver: null,
         measureRaf: 0,
         pendingAnchor: null,
+        scrollSettleTimer: 0,
       };
       state.rowResizeObserver = new ResizeObserver((entries) => {
         let changed = false;
@@ -2227,6 +2252,10 @@
           }
         }
         if (!changed) return;
+        if (state.scrollSettleTimer) {
+          state.pendingAnchor = captureChatScrollAnchor();
+          return;
+        }
         queueChatViewportStabilize(captureChatScrollAnchor());
       });
       chatVirtualState = state;
@@ -2261,6 +2290,19 @@
         chatViewportForcedMessageId = null;
         renderChatViewport({ forceMessageId: nextForcedId });
       });
+    }
+
+    function scheduleChatScrollSettle() {
+      const state = ensureChatVirtualState();
+      if (state.scrollSettleTimer) clearTimeout(state.scrollSettleTimer);
+      state.scrollSettleTimer = window.setTimeout(() => {
+        state.scrollSettleTimer = 0;
+        if (state.pendingAnchor) {
+          const anchor = state.pendingAnchor;
+          state.pendingAnchor = null;
+          queueChatViewportStabilize(anchor);
+        }
+      }, SCROLL_SETTLE_MS);
     }
 
     function trimChatHeightCache(messages) {
@@ -2458,6 +2500,16 @@
       }
 
       const viewport = computeChatViewport(visible, forceMessageId);
+      if (
+        forceMessageId == null &&
+        state.start === viewport.start &&
+        state.end === viewport.end &&
+        state.shouldVirtualize === viewport.shouldVirtualize
+      ) {
+        state.topSpacer.style.height = viewport.shouldVirtualize ? `${viewport.topHeight}px` : '0px';
+        state.bottomSpacer.style.height = viewport.shouldVirtualize ? `${viewport.bottomHeight}px` : '0px';
+        return;
+      }
       state.shouldVirtualize = viewport.shouldVirtualize;
       state.start = viewport.start;
       state.end = viewport.end;
@@ -3631,7 +3683,7 @@
 
     function cleanupActiveTextViewer() {
       if (!activeTextViewerState) return;
-      const { stage, scrollHandler, progressHandler, resizeObserver, zoomCleanup, blockResizeObserver, renderRaf, viewerChrome } = activeTextViewerState;
+      const { stage, scrollHandler, progressHandler, resizeObserver, zoomCleanup, blockResizeObserver, renderRaf, viewerChrome, scrollSettleTimer } = activeTextViewerState;
       if (stage && scrollHandler) {
         stage.removeEventListener('scroll', scrollHandler);
       }
@@ -3646,6 +3698,9 @@
       }
       if (renderRaf) {
         cancelAnimationFrame(renderRaf);
+      }
+      if (scrollSettleTimer) {
+        clearTimeout(scrollSettleTimer);
       }
       if (viewerChrome) {
         viewerChrome.cleanup();
@@ -3711,6 +3766,18 @@
           scrollTextViewerToLine(state, nextLine);
         }
       });
+    }
+
+    function scheduleTextViewerScrollSettle(state) {
+      if (!state) return;
+      if (state.scrollSettleTimer) clearTimeout(state.scrollSettleTimer);
+      state.scrollSettleTimer = window.setTimeout(() => {
+        state.scrollSettleTimer = 0;
+        if (state.pendingMeasureRefresh) {
+          state.pendingMeasureRefresh = false;
+          queueTextViewerViewportRefresh(state, getTextViewerCurrentLine(state));
+        }
+      }, SCROLL_SETTLE_MS);
     }
 
     function getTextViewerBlockNode(state, index) {
@@ -3825,7 +3892,11 @@
       state.viewerChrome?.syncIndicators(false);
 
       if (measuredChanged) {
-        queueTextViewerViewportRefresh(state, preservedLine);
+        if (state.scrollSettleTimer) {
+          state.pendingMeasureRefresh = true;
+        } else {
+          queueTextViewerViewportRefresh(state, preservedLine);
+        }
       }
     }
 
@@ -3865,10 +3936,11 @@
       }
     }
 
-    function scheduleTextViewerProgressSave(messageId, lineNumber) {
-      if (!messageId) return;
+    function scheduleTextViewerProgressSaveForState(messageId, state) {
+      if (!messageId || !state) return;
       if (textProgressSaveTimer) clearTimeout(textProgressSaveTimer);
       textProgressSaveTimer = setTimeout(() => {
+        const lineNumber = activeTextViewerState === state ? getTextViewerCurrentLine(state) : 1;
         saveTextProgress(messageId, lineNumber).catch(() => {});
       }, 240);
     }
@@ -3930,13 +4002,18 @@
           zoomCleanup: null,
           renderRaf: 0,
           pendingLine: null,
+          scrollSettleTimer: 0,
+          pendingMeasureRefresh: false,
           viewerChrome,
       };
       applyTextViewerStageState(state);
 
-      state.scrollHandler = () => renderTextViewerViewport(state);
+      state.scrollHandler = () => {
+        scheduleTextViewerScrollSettle(state);
+        queueTextViewerViewportRefresh(state);
+      };
       stage.addEventListener('scroll', state.scrollHandler, { passive: true });
-      state.progressHandler = () => scheduleTextViewerProgressSave(item.id, getTextViewerCurrentLine(state));
+      state.progressHandler = () => scheduleTextViewerProgressSaveForState(item.id, state);
       stage.addEventListener('scroll', state.progressHandler, { passive: true });
       state.resizeObserver = new ResizeObserver(() => queueTextViewerViewportRefresh(state, getTextViewerCurrentLine(state)));
       state.resizeObserver.observe(stage);
@@ -3952,7 +4029,11 @@
           }
         }
         if (changed) {
-          queueTextViewerViewportRefresh(state, getTextViewerCurrentLine(state));
+          if (state.scrollSettleTimer) {
+            state.pendingMeasureRefresh = true;
+          } else {
+            queueTextViewerViewportRefresh(state, getTextViewerCurrentLine(state));
+          }
         }
       });
       state.zoomCleanup = attachTextViewerZoom(stage);
@@ -3982,6 +4063,35 @@
         applyTextViewerStageState(activeTextViewerState);
         recomputeTextViewerHeights(activeTextViewerState);
         queueTextViewerViewportRefresh(activeTextViewerState, keepLine);
+      }
+    }
+
+    function renderMediaLoadingState(item, message = '正在加载内容…') {
+      mediaStage.innerHTML = '';
+      const loading = document.createElement('div');
+      loading.className = 'viewer-loading';
+      const spinner = document.createElement('div');
+      spinner.className = 'viewer-loading-spinner';
+      const title = document.createElement('div');
+      title.textContent = item?.file_name || item?.text?.slice(0, 24) || '正在打开';
+      const hint = document.createElement('div');
+      hint.textContent = message;
+      loading.appendChild(spinner);
+      loading.appendChild(title);
+      loading.appendChild(hint);
+      mediaStage.appendChild(loading);
+    }
+
+    function prepareMediaViewerShell(item, { showLoading = false, loadingMessage = '正在加载内容…' } = {}) {
+      mediaCopyBtn.classList.toggle('hidden', !(item.kind === 'text' || isTextLikeFileMessage(item)));
+      renderMediaViewerHint(item);
+      renderMediaViewerTitle(item, mediaIndex, mediaList.length);
+      mediaPrevBtn.disabled = mediaIndex <= 0;
+      mediaNextBtn.disabled = mediaIndex >= mediaList.length - 1;
+      if (showLoading) {
+        renderMediaLoadingState(item, loadingMessage);
+      } else {
+        mediaStage.innerHTML = '';
       }
     }
 
@@ -5077,18 +5187,29 @@
       if (!mediaList.length) return;
       if (index < 0 || index >= mediaList.length) return;
 
+      const wasHidden = mediaViewer.classList.contains('hidden');
+      mediaIndex = index;
+      let item = mediaList[mediaIndex];
+      if (wasHidden) {
+        prepareMediaViewerShell(item, {
+          showLoading: true,
+          loadingMessage: item.kind === 'text' || isTextLikeFileMessage(item) ? '正在载入文本…' : '正在载入媒体…',
+        });
+        appPage.classList.add('modal-scroll-lock');
+        mediaViewer.classList.remove('hidden');
+        syncMediaHistoryContext(true);
+        requestAnimationFrame(() => mediaDialog.focus());
+      }
+
       await persistActiveVideoProgress();
       await persistActiveTextViewerProgress();
       cleanupActiveAudioVisualizer();
       cleanupActiveAudioShell();
       resetMediaDialogLayout();
 
-      mediaIndex = index;
-      const item = mediaList[mediaIndex];
+      item = mediaList[mediaIndex];
       const mt = item.mime_type || '';
-      mediaStage.innerHTML = '';
-      mediaCopyBtn.classList.toggle('hidden', !(item.kind === 'text' || isTextLikeFileMessage(item)));
-      renderMediaViewerHint(item);
+      prepareMediaViewerShell(item);
 
       if (item.kind === 'text' || isTextLikeFileMessage(item)) {
         mediaDialog.classList.add('text-mode');
@@ -5200,9 +5321,6 @@
         }
       }
 
-      renderMediaViewerTitle(item, mediaIndex, mediaList.length);
-      mediaPrevBtn.disabled = mediaIndex <= 0;
-      mediaNextBtn.disabled = mediaIndex >= mediaList.length - 1;
       appPage.classList.add('modal-scroll-lock');
       mediaViewer.classList.remove('hidden');
       syncMediaHistoryContext(true);
@@ -5443,6 +5561,15 @@
 
     function hideUploadTasksPanel() {
       uploadTaskOverlay.classList.add('hidden');
+    }
+
+    function hasActiveUploadTasks() {
+      for (const task of uploadTasks.values()) {
+        if (task.status === 'queued' || task.status === 'uploading' || task.status === 'retrying' || task.status === 'thumbnailing') {
+          return true;
+        }
+      }
+      return false;
     }
 
     function makeFileKey(file) {
@@ -5867,6 +5994,9 @@
         task.controllers.clear();
         updateTaskSpeed(task, 0);
         renderUploadTasks();
+        if (!hasActiveUploadTasks()) {
+          hideUploadTasksPanel();
+        }
         await loadMessages({ source: 'upload-complete', followBottom: false, preserveScroll: true });
         await animateChatScroll(chat.scrollHeight - chat.clientHeight);
       } catch (err) {
@@ -5875,6 +6005,9 @@
           task.error = err?.message || String(err);
           task.completedAt = Date.now();
           renderUploadTasks();
+          if (!hasActiveUploadTasks()) {
+            hideUploadTasksPanel();
+          }
         }
       }
     }
@@ -6159,6 +6292,7 @@
     });
 
     chat.addEventListener('scroll', () => {
+      scheduleChatScrollSettle();
       scheduleChatViewportRender();
       updateScrollButtonState();
       syncChatScrollIndicator(true);
@@ -6251,6 +6385,9 @@
       }
       if (e.target === confirmOverlay) {
         closeConfirmDialog(false);
+      }
+      if (e.target === uploadTaskOverlay) {
+        hideUploadTasksPanel();
       }
       if (e.target === mediaViewer) {
         closeMediaViewer().catch(() => {});
