@@ -1681,7 +1681,7 @@
         <div class="paste-progress-fill" id="largePasteProgressFill"></div>
       </div>
       <div class="paste-progress-meta" id="largePasteProgressMeta">当前正在粘贴第 1 / 1 片</div>
-      <div class="paste-progress-actions">
+      <div class="paste-progress-actions" id="largePasteActions">
         <button id="largePasteCancelBtn" class="danger">取消</button>
       </div>
     </div>
@@ -1821,6 +1821,7 @@
     const largePasteMessage = document.getElementById('largePasteMessage');
     const largePasteProgressFill = document.getElementById('largePasteProgressFill');
     const largePasteProgressMeta = document.getElementById('largePasteProgressMeta');
+    const largePasteActions = document.getElementById('largePasteActions');
     const largePasteCancelBtn = document.getElementById('largePasteCancelBtn');
     const toastStack = document.getElementById('toastStack');
     const filterMenuBtn = document.getElementById('filterMenuBtn');
@@ -3074,6 +3075,53 @@
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     }
 
+    function sendTextRequestWithProgress(text, onProgress = () => {}) {
+      const payload = JSON.stringify({ text });
+      const totalBytes = new TextEncoder().encode(payload).length;
+      const run = () => new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/messages/text');
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        }
+        xhr.upload.onprogress = (event) => {
+          const total = event.lengthComputable && event.total > 0 ? event.total : totalBytes;
+          onProgress(event.loaded, total);
+        };
+        xhr.onerror = () => reject(new Error('发送失败'));
+        xhr.onload = () => {
+          onProgress(totalBytes, totalBytes);
+          if (xhr.status === 401) {
+            reject(new Error('未授权'));
+            return;
+          }
+          if (xhr.status < 200 || xhr.status >= 300) {
+            try {
+              const parsed = JSON.parse(xhr.responseText || '{}');
+              reject(new Error(parsed.error || `请求失败: ${xhr.status}`));
+            } catch (_) {
+              reject(new Error(`请求失败: ${xhr.status}`));
+            }
+            return;
+          }
+          try {
+            resolve(JSON.parse(xhr.responseText || '{}'));
+          } catch (_) {
+            reject(new Error('发送结果解析失败'));
+          }
+        };
+        onProgress(0, totalBytes);
+        xhr.send(payload);
+      });
+      return run().catch(async (err) => {
+        if (err?.message !== '未授权') throw err;
+        const recovered = await tryAutoReauthenticate();
+        if (!recovered) throw err;
+        return run();
+      });
+    }
+
     function isPlainFileMessage(msg) {
       return msg?.kind === 'file' && !getMessageMediaKind(msg) && !isTextLikeFileMessage(msg);
     }
@@ -3197,10 +3245,11 @@
 
     function closeLargePasteDialog() {
       largePasteOverlay?.classList.add('hidden');
+      largePasteActions?.classList.remove('hidden');
       activeLargePasteSession = null;
     }
 
-    function openLargePasteDialog({ total, onCancel, title = '正在分段粘贴', message = '正在把大段文本分片写入输入区，请稍候。', progressVerb = '粘贴' }) {
+    function openLargePasteDialog({ total, onCancel, title = '正在分段粘贴', message = '正在把大段文本分片写入输入区，请稍候。', progressVerb = '粘贴', showCancel = true }) {
       activeLargePasteSession = { onCancel };
       if (largePasteTitle) {
         largePasteTitle.textContent = title;
@@ -3209,8 +3258,11 @@
         largePasteMessage.textContent = message;
       }
       updateLargePasteDialog(0, total, { progressVerb });
+      largePasteActions?.classList.toggle('hidden', !showCancel);
       largePasteOverlay?.classList.remove('hidden');
-      requestAnimationFrame(() => largePasteCancelBtn?.focus());
+      if (showCancel) {
+        requestAnimationFrame(() => largePasteCancelBtn?.focus());
+      }
     }
 
     async function replaceTextareaValueWithProgress(textarea, text, {
@@ -5277,8 +5329,8 @@
         };
 
         head.appendChild(spacer);
-        actions.appendChild(copyBtn);
         actions.appendChild(exportBtn);
+        actions.appendChild(copyBtn);
         head.appendChild(actions);
         bubble.appendChild(head);
 
@@ -5896,11 +5948,22 @@
     async function sendText() {
       const text = textInput.value;
       if (!text) return;
-      const created = await api('/api/messages/text', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
+      openLargePasteDialog({
+        total: Math.max(1, new TextEncoder().encode(JSON.stringify({ text })).length),
+        onCancel: null,
+        title: '正在发送文本',
+        message: '正在把文本发送到会话流，请稍候。',
+        progressVerb: '发送',
+        showCancel: false,
       });
+      let created;
+      try {
+        created = await sendTextRequestWithProgress(text, (loaded, total) => {
+          updateLargePasteDialog(loaded, total, { progressVerb: '发送' });
+        });
+      } finally {
+        closeLargePasteDialog();
+      }
       markMessageAsSelf(created.id);
       textInput.value = '';
       syncInputVirtualization();
