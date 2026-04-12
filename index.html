@@ -20,15 +20,17 @@
       --danger: #d04545;
     }
     * { box-sizing: border-box; }
-    html {
-      overscroll-behavior-y: none;
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+      overscroll-behavior: none;
     }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
       font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-      overscroll-behavior-y: none;
     }
     html.drag-scroll-lock,
     body.drag-scroll-lock {
@@ -38,11 +40,23 @@
     .page {
       max-width: 1080px;
       margin: 0 auto;
-      min-height: 100vh;
+      height: 100dvh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       gap: 12px;
       padding: 14px;
+      overflow-y: auto;
+      overscroll-behavior-y: none;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+    }
+    .page.drag-scroll-lock {
+      overflow: hidden;
+      touch-action: none;
+    }
+    .page.modal-scroll-lock {
+      overflow: hidden;
     }
     .panel {
       background: var(--panel);
@@ -211,7 +225,7 @@
       max-height: 82vh;
       overflow: auto;
       overflow-anchor: none;
-      overscroll-behavior: contain;
+      overscroll-behavior: auto;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
       scrollbar-width: none;
@@ -434,14 +448,104 @@
       background: rgba(29, 78, 216, 0.92);
       box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.18);
     }
+    .input-scroll-indicator {
+      position: absolute;
+      top: 12px;
+      bottom: 16px;
+      right: 0;
+      width: 18px;
+      border-radius: 999px;
+      background: transparent;
+      pointer-events: auto;
+      touch-action: none;
+      opacity: 0;
+      transition: opacity .24s ease;
+      z-index: 3;
+      overflow: visible;
+    }
+    .input-scroll-indicator::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 4px;
+      margin-left: -2px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.10);
+      backdrop-filter: blur(8px);
+    }
+    .input-scroll-indicator.hidden {
+      display: none;
+    }
+    .input-stage.input-scroll-visible .input-scroll-indicator {
+      opacity: 1;
+    }
+    .input-scroll-thumb {
+      position: absolute;
+      left: 50%;
+      width: 4px;
+      margin-left: -2px;
+      background: rgba(37, 99, 235, 0.72);
+      border-radius: inherit;
+      min-height: 24px;
+      transform: translateY(0);
+    }
+    .input-scroll-thumb.dragging {
+      background: rgba(29, 78, 216, 0.92);
+      box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.18);
+    }
+    .panel-resize-grip {
+      position: absolute;
+      right: 3px;
+      bottom: 3px;
+      width: 28px;
+      height: 28px;
+      min-width: 28px;
+      min-height: 28px;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.10);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(36, 48, 67, 0.82);
+      cursor: ns-resize;
+      touch-action: none;
+      z-index: 6;
+      user-select: none;
+      padding: 0;
+    }
+    .panel-resize-grip svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+      flex: 0 0 auto;
+    }
+    .panel-resize-grip.dragging {
+      background: rgba(29, 114, 255, 0.98);
+      color: #fff;
+      border-color: rgba(29, 114, 255, 0.98);
+      box-shadow: 0 10px 22px rgba(29, 114, 255, 0.28);
+    }
+    #chatResizeGrip {
+      right: 2px;
+      bottom: 2px;
+    }
+    #inputResizeGrip {
+      right: -8px;
+      bottom: -4px;
+    }
     textarea {
       width: 100%;
       min-height: 110px;
       resize: vertical;
       overflow: auto;
-      overscroll-behavior: contain;
+      overscroll-behavior: auto;
       -webkit-overflow-scrolling: touch;
       scrollbar-gutter: stable;
+      touch-action: pan-y;
       border-radius: 10px;
       border: 1px solid #ccd7e7;
       padding: 10px;
@@ -460,6 +564,7 @@
       position: relative;
       border-radius: 10px;
       transition: transform .18s ease, box-shadow .18s ease;
+      overflow: visible;
     }
     .input-stage.drag-upload-active {
       transform: translateY(-1px);
@@ -939,7 +1044,7 @@
       height: 100%;
       overflow: auto;
       overscroll-behavior: contain;
-      touch-action: none;
+      touch-action: pan-x pan-y;
       cursor: grab;
       box-sizing: border-box;
       border-radius: 18px;
@@ -1302,6 +1407,9 @@
         height: 39vh;
         min-height: 220px;
       }
+      textarea {
+        resize: none;
+      }
       .task-overlay { padding: 0; }
       .task-dialog {
         width: 100%;
@@ -1368,6 +1476,52 @@
       }
       .media-dialog.audio-mode .audio-shell-volume {
         width: 82px;
+      }
+    }
+    @media (pointer: coarse), (hover: none) {
+      .chat-scroll-indicator,
+      .input-scroll-indicator,
+      .viewer-indicator-track {
+        opacity: .38;
+      }
+      .chat-panel.chat-scroll-visible .chat-scroll-indicator,
+      .input-stage.input-scroll-visible .input-scroll-indicator,
+      .viewer-shell.indicators-visible .viewer-indicator-track {
+        opacity: .95;
+      }
+      .chat-scroll-indicator::before,
+      .input-scroll-indicator::before,
+      .viewer-indicator-track.horizontal::before,
+      .viewer-indicator-track.vertical::before {
+        background: rgba(15, 23, 42, 0.18);
+      }
+      .chat-scroll-indicator::before,
+      .input-scroll-indicator::before,
+      .viewer-indicator-track.vertical::before {
+        width: 6px;
+        margin-left: -3px;
+      }
+      .viewer-indicator-track.horizontal::before {
+        height: 6px;
+        margin-top: -3px;
+      }
+      .chat-scroll-thumb,
+      .input-scroll-thumb,
+      .viewer-indicator-track.vertical .viewer-indicator-thumb {
+        width: 6px;
+        margin-left: -3px;
+      }
+      .viewer-indicator-track.horizontal .viewer-indicator-thumb {
+        height: 6px;
+        margin-top: -3px;
+      }
+      .panel-resize-grip {
+        right: 2px;
+        bottom: 2px;
+        width: 26px;
+        height: 26px;
+        font-size: 13px;
+        background: rgba(255, 255, 255, 0.96);
       }
     }
   </style>
@@ -1478,6 +1632,12 @@
     <div class="panel chat-panel">
       <div id="chat"></div>
       <div class="chat-scroll-indicator hidden" id="chatScrollIndicator"><div class="chat-scroll-thumb" id="chatScrollThumb"></div></div>
+      <button type="button" class="panel-resize-grip" id="chatResizeGrip" aria-label="调整聊天区高度">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 4v16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+          <path d="M9 7.5 12 4l3 3.5M9 16.5 12 20l3-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </button>
       <div class="scroll-fab-group hidden" id="scrollFabGroup">
         <button id="scrollTopBtn" class="scroll-fab" title="回到顶部">↑</button>
         <button id="scrollBottomBtn" class="scroll-fab" title="滑到底部">↓</button>
@@ -1492,6 +1652,13 @@
           </div>
         </div>
         <textarea id="textInput" placeholder="输入要发送的文本（Enter 发送，Ctrl + Enter 换行）" spellcheck="false" autocorrect="off" autocomplete="off" autocapitalize="off"></textarea>
+        <div class="input-scroll-indicator hidden" id="inputScrollIndicator"><div class="input-scroll-thumb" id="inputScrollThumb"></div></div>
+        <button type="button" class="panel-resize-grip" id="inputResizeGrip" aria-label="调整输入框高度">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 4v16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+            <path d="M9 7.5 12 4l3 3.5M9 16.5 12 20l3-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
       </div>
       <div class="composer-actions">
         <div style="position:relative;">
@@ -1529,6 +1696,7 @@
     const chat = document.getElementById('chat');
     const appPage = document.getElementById('appPage');
     const chatPanel = document.querySelector('.chat-panel');
+    const chatResizeGrip = document.getElementById('chatResizeGrip');
     const normalActions = document.getElementById('normalActions');
     const manageActions = document.getElementById('manageActions');
     const searchOverlay = document.getElementById('searchOverlay');
@@ -1565,6 +1733,9 @@
     const inputVirtualScroll = document.getElementById('inputVirtualScroll');
     const inputVirtualContent = document.getElementById('inputVirtualContent');
     const textInput = document.getElementById('textInput');
+    const inputScrollIndicator = document.getElementById('inputScrollIndicator');
+    const inputScrollThumb = document.getElementById('inputScrollThumb');
+    const inputResizeGrip = document.getElementById('inputResizeGrip');
 
     const restartBtn = document.getElementById('restartBtn');
     const logoutBtn = document.getElementById('logoutBtn');
@@ -1648,6 +1819,7 @@
     let textViewerZoom = 1;
     let virtualRetentionClock = 0;
     let chatIndicatorHideTimer = 0;
+    let inputIndicatorHideTimer = 0;
 
     const SCROLL_EDGE_THRESHOLD = 24;
     const SMOOTH_SCROLL_DURATION = 1000;
@@ -1703,6 +1875,7 @@
     function setGlobalDragScrollLock(locked) {
       document.documentElement.classList.toggle('drag-scroll-lock', locked);
       document.body.classList.toggle('drag-scroll-lock', locked);
+      appPage?.classList.toggle('drag-scroll-lock', locked);
     }
 
     function getHeightOffset(heights, endExclusive) {
@@ -2444,6 +2617,116 @@
       });
     }
 
+    function showInputScrollIndicator() {
+      if (!textInputStage || !inputScrollIndicator) return;
+      textInputStage.classList.add('input-scroll-visible');
+      if (inputIndicatorHideTimer) clearTimeout(inputIndicatorHideTimer);
+      inputIndicatorHideTimer = window.setTimeout(() => {
+        inputIndicatorHideTimer = 0;
+        textInputStage.classList.remove('input-scroll-visible');
+      }, VIEWER_INDICATOR_IDLE_MS);
+    }
+
+    function syncInputScrollIndicator(forceVisible = false) {
+      if (!inputScrollIndicator || !inputScrollThumb) return;
+      const scrollable = textInput.scrollHeight - textInput.clientHeight > 1;
+      inputScrollIndicator.classList.toggle('hidden', !scrollable);
+      if (!scrollable) return;
+      const trackHeight = inputScrollIndicator.clientHeight || Math.max(1, textInput.clientHeight - 24);
+      const thumbHeight = Math.max(24, trackHeight * (textInput.clientHeight / Math.max(textInput.scrollHeight, 1)));
+      const maxTop = Math.max(0, trackHeight - thumbHeight);
+      const progress = textInput.scrollHeight > textInput.clientHeight ? textInput.scrollTop / (textInput.scrollHeight - textInput.clientHeight) : 0;
+      inputScrollThumb.style.height = `${thumbHeight}px`;
+      inputScrollThumb.style.transform = `translateY(${maxTop * progress}px)`;
+      if (forceVisible) showInputScrollIndicator();
+    }
+
+    function bindInputScrollIndicatorDrag() {
+      if (!inputScrollIndicator || !inputScrollThumb) return;
+      let activePointerId = null;
+      const moveHandler = (event) => {
+        if (activePointerId !== null && event.pointerId !== activePointerId) return;
+        event.preventDefault();
+        const rect = inputScrollIndicator.getBoundingClientRect();
+        const ratio = rect.height > 0 ? Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)) : 0;
+        textInput.scrollTop = ratio * Math.max(0, textInput.scrollHeight - textInput.clientHeight);
+        syncInputVirtualization();
+        syncInputScrollIndicator(true);
+      };
+      const upHandler = () => {
+        if (activePointerId !== null) {
+          try {
+            inputScrollIndicator.releasePointerCapture?.(activePointerId);
+          } catch (_) {}
+        }
+        activePointerId = null;
+        setGlobalDragScrollLock(false);
+        inputScrollThumb.classList.remove('dragging');
+        window.removeEventListener('pointermove', moveHandler, true);
+        window.removeEventListener('pointerup', upHandler, true);
+        window.removeEventListener('pointercancel', upHandler, true);
+      };
+      inputScrollIndicator.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        activePointerId = event.pointerId;
+        setGlobalDragScrollLock(true);
+        try {
+          inputScrollIndicator.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
+        inputScrollThumb.classList.add('dragging');
+        showInputScrollIndicator();
+        moveHandler(event);
+        window.addEventListener('pointermove', moveHandler, true);
+        window.addEventListener('pointerup', upHandler, true);
+        window.addEventListener('pointercancel', upHandler, true);
+      });
+    }
+
+    function bindResizeGrip(grip, target, { minHeight, maxHeight, onUpdate = () => {} } = {}) {
+      if (!grip || !target) return;
+      let activePointerId = null;
+      let startY = 0;
+      let startHeight = 0;
+      const moveHandler = (event) => {
+        if (activePointerId !== null && event.pointerId !== activePointerId) return;
+        event.preventDefault();
+        const nextHeight = Math.max(minHeight, Math.min(maxHeight, startHeight + (event.clientY - startY)));
+        target.style.height = `${Math.round(nextHeight)}px`;
+        onUpdate();
+      };
+      const upHandler = () => {
+        if (activePointerId !== null) {
+          try {
+            grip.releasePointerCapture?.(activePointerId);
+          } catch (_) {}
+        }
+        activePointerId = null;
+        setGlobalDragScrollLock(false);
+        grip.classList.remove('dragging');
+        window.removeEventListener('pointermove', moveHandler, true);
+        window.removeEventListener('pointerup', upHandler, true);
+        window.removeEventListener('pointercancel', upHandler, true);
+        scheduleUiStateSave();
+        updateResetSizeButtonState();
+      };
+      grip.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        activePointerId = event.pointerId;
+        startY = event.clientY;
+        startHeight = target.getBoundingClientRect().height;
+        setGlobalDragScrollLock(true);
+        try {
+          grip.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
+        grip.classList.add('dragging');
+        window.addEventListener('pointermove', moveHandler, true);
+        window.addEventListener('pointerup', upHandler, true);
+        window.addEventListener('pointercancel', upHandler, true);
+      });
+    }
+
     function updateScrollButtonState() {
       const shouldShow = !loginMask.classList.contains('hidden');
       scrollFabGroup.classList.toggle('hidden', shouldShow);
@@ -2934,15 +3217,6 @@
       placeholder.title = '点击查看详情';
       placeholder.onclick = () => openMediaByMessageId(item.id).catch(() => {});
       node.replaceWith(placeholder);
-    }
-
-    function bindThumbnailImageFallback(img, primarySrc, fallbackSrc) {
-      if (!primarySrc || !fallbackSrc || primarySrc === fallbackSrc) return;
-      img.addEventListener('error', () => {
-        if (img.dataset.thumbnailFallbackApplied === '1') return;
-        img.dataset.thumbnailFallbackApplied = '1';
-        img.src = fallbackSrc;
-      }, { once: true });
     }
 
     function formatAudioMime(mimeType, fileName) {
@@ -3507,6 +3781,12 @@
       const end = Math.min(heights.length, visibleEnd + TEXT_VIEWER_PRELOAD_AFTER);
       const topHeight = getHeightOffset(heights, start);
       const endHeight = getHeightOffset(heights, end);
+
+      if (state.start === start && state.end === end) {
+        state.viewerChrome?.syncIndicators(false);
+        return;
+      }
+
       const preservedLine = state.start !== state.end ? getTextViewerCurrentLine(state) : null;
 
       topSpacer.style.height = `${18 + topHeight}px`;
@@ -3786,21 +4066,13 @@
     function attachTextViewerZoom(stage) {
       let pinchDistance = 0;
       let pinchStartZoom = textViewerZoom;
-      let dragPointerId = null;
-      let dragStartX = 0;
-      let dragStartY = 0;
-      let dragStartTop = 0;
-      let dragStartLeft = 0;
       const activePointers = new Map();
-      const momentum = createMomentumScroller(() => stage, () => activeTextViewerState?.viewerChrome?.syncIndicators(true));
       const beginPinch = () => {
         if (activePointers.size < 2) return false;
         const [a, b] = Array.from(activePointers.values());
         pinchDistance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         if (!pinchDistance) return false;
         pinchStartZoom = textViewerZoom;
-        dragPointerId = null;
-        momentum.stop();
         stage.classList.add('is-pinching');
         activeTextViewerState?.viewerChrome?.showIndicators();
         return true;
@@ -3834,12 +4106,7 @@
           }
           return;
         }
-        dragPointerId = event.pointerId;
-        dragStartX = event.clientX;
-        dragStartY = event.clientY;
-        dragStartTop = stage.scrollTop;
-        dragStartLeft = stage.scrollLeft;
-        momentum.begin(event.clientX, event.clientY);
+        activeTextViewerState?.viewerChrome?.showIndicators();
       };
       const pointerMoveHandler = (event) => {
         if (!activePointers.has(event.pointerId)) return;
@@ -3860,13 +4127,9 @@
           activeTextViewerState?.viewerChrome?.showIndicators();
           return;
         }
-        if (dragPointerId !== event.pointerId || activePointers.size !== 1) return;
-        event.preventDefault();
-        event.stopPropagation();
-        stage.scrollTop = Math.max(0, dragStartTop + (dragStartY - event.clientY));
-        stage.scrollLeft = Math.max(0, dragStartLeft + (dragStartX - event.clientX));
-        momentum.track(event.clientX, event.clientY);
-        activeTextViewerState?.viewerChrome?.showIndicators();
+        if (activePointers.size === 1) {
+          activeTextViewerState?.viewerChrome?.showIndicators();
+        }
       };
       const pointerEndHandler = (event) => {
         activePointers.delete(event.pointerId);
@@ -3878,18 +4141,7 @@
           return;
         }
         endPinch();
-        if (activePointers.size === 1) {
-          const [remainingId, remainingPointer] = Array.from(activePointers.entries())[0];
-          dragPointerId = remainingId;
-          dragStartX = remainingPointer.clientX;
-          dragStartY = remainingPointer.clientY;
-          dragStartTop = stage.scrollTop;
-          dragStartLeft = stage.scrollLeft;
-          momentum.begin(remainingPointer.clientX, remainingPointer.clientY);
-        } else {
-          dragPointerId = null;
-          momentum.release();
-        }
+        activeTextViewerState?.viewerChrome?.showIndicators();
       };
       const gestureBlockHandler = (event) => {
         event.preventDefault();
@@ -3925,7 +4177,6 @@
         stage.removeEventListener('gesturestart', gestureBlockHandler);
         stage.removeEventListener('gesturechange', gestureScaleHandler);
         stage.removeEventListener('gestureend', endPinch);
-        momentum.stop();
         endPinch();
       };
     }
@@ -4952,6 +5203,7 @@
       renderMediaViewerTitle(item, mediaIndex, mediaList.length);
       mediaPrevBtn.disabled = mediaIndex <= 0;
       mediaNextBtn.disabled = mediaIndex >= mediaList.length - 1;
+      appPage.classList.add('modal-scroll-lock');
       mediaViewer.classList.remove('hidden');
       syncMediaHistoryContext(true);
       requestAnimationFrame(() => mediaDialog.focus());
@@ -4985,6 +5237,7 @@
           syncInputVirtualization();
         });
       }
+      appPage.classList.remove('modal-scroll-lock');
       mediaViewer.classList.add('hidden');
       mediaStage.innerHTML = '';
       mediaIndex = -1;
@@ -5791,15 +6044,32 @@
     textInput.addEventListener('input', syncInputVirtualization);
     textInput.addEventListener('pointerdown', () => {
       textInputStage.classList.add('mirror-disabled');
+      showInputScrollIndicator();
     });
     textInput.addEventListener('mousedown', () => {
       textInputStage.classList.add('mirror-disabled');
+      showInputScrollIndicator();
     });
-    textInput.addEventListener('scroll', syncInputVirtualization);
-    textInput.addEventListener('click', syncInputVirtualization);
-    textInput.addEventListener('keyup', syncInputVirtualization);
-    textInput.addEventListener('focus', syncInputVirtualization);
-    textInput.addEventListener('blur', syncInputVirtualization);
+    textInput.addEventListener('scroll', () => {
+      syncInputVirtualization();
+      syncInputScrollIndicator(true);
+    });
+    textInput.addEventListener('click', () => {
+      syncInputVirtualization();
+      syncInputScrollIndicator(true);
+    });
+    textInput.addEventListener('keyup', () => {
+      syncInputVirtualization();
+      syncInputScrollIndicator(false);
+    });
+    textInput.addEventListener('focus', () => {
+      syncInputVirtualization();
+      syncInputScrollIndicator(true);
+    });
+    textInput.addEventListener('blur', () => {
+      syncInputVirtualization();
+      syncInputScrollIndicator(false);
+    });
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
@@ -5896,6 +6166,7 @@
         flushPendingMessages({ followBottom: true });
       }
     });
+    chat.addEventListener('pointerdown', () => showChatScrollIndicator(), { passive: true });
 
     passwordInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') login();
@@ -5903,6 +6174,23 @@
 
     fetchPublicConfig().catch(() => {});
     bindChatScrollIndicatorDrag();
+    bindInputScrollIndicatorDrag();
+    bindResizeGrip(chatResizeGrip, chat, {
+      minHeight: 220,
+      maxHeight: window.innerHeight * 0.86,
+      onUpdate: () => {
+        syncChatScrollIndicator(true);
+        scheduleChatViewportRender();
+      },
+    });
+    bindResizeGrip(inputResizeGrip, textInput, {
+      minHeight: 110,
+      maxHeight: Math.max(180, window.innerHeight * 0.55),
+      onUpdate: () => {
+        syncInputVirtualization();
+        syncInputScrollIndicator(true);
+      },
+    });
 
     try {
       const cached = localStorage.getItem(REMEMBER_PASSWORD_KEY);
@@ -5921,6 +6209,7 @@
       syncChatScrollIndicator(false);
       scheduleChatViewportRender();
       syncInputVirtualization();
+      syncInputScrollIndicator(false);
       updateResetSizeButtonState();
     });
     resizeObserver.observe(chat);
