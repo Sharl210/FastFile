@@ -1911,6 +1911,8 @@
     let latestHandledMessageRequestSeq = 0;
     const textFileContentCache = new Map();
     let scrollAnimationFrame = 0;
+    let chatBottomFollowUntil = 0;
+    let chatBottomFollowFrame = 0;
     let chatViewportRaf = 0;
     let chatViewportForcedMessageId = null;
     const selfMessageIds = new Set();
@@ -1939,6 +1941,7 @@
 
     const SCROLL_EDGE_THRESHOLD = 24;
     const SMOOTH_SCROLL_DURATION = 1000;
+    const CHAT_BOTTOM_FOLLOW_WINDOW_MS = 1800;
     const MEDIA_VIEWPORT_MAX_RATIO = 0.9;
     const TEXT_PREVIEW_MAX_LINES = 5;
     const TEXT_PREVIEW_MAX_CHARS = 200;
@@ -3668,6 +3671,7 @@
       placeholder.title = '点击查看详情';
       placeholder.onclick = () => openMediaByMessageId(item.id).catch(() => {});
       node.replaceWith(placeholder);
+      scheduleChatBottomFollowRefresh(280);
     }
 
     function formatAudioMime(mimeType, fileName) {
@@ -5114,6 +5118,7 @@
 
       img.addEventListener('load', () => {
         setMediaCompatibility(item, { kind: 'image', supported: true });
+        if (compact) scheduleChatBottomFollowRefresh(280);
       }, { once: true });
 
       img.addEventListener('error', () => {
@@ -5151,6 +5156,7 @@
 
       video.addEventListener('loadedmetadata', () => {
         if (markSupported()) {
+          if (compact) scheduleChatBottomFollowRefresh(280);
           if (compact) {
             const previewTime = Math.min(0.08, Math.max(0.001, (video.duration || 0) / 4));
             if (previewTime > 0) {
@@ -5211,6 +5217,30 @@
           }
         };
         scrollAnimationFrame = requestAnimationFrame(step);
+      });
+    }
+
+    function shouldKeepChatBottomFollow() {
+      return performance.now() < chatBottomFollowUntil;
+    }
+
+    function requestChatBottomFollow({ duration = CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated = true, scrollDuration = SMOOTH_SCROLL_DURATION } = {}) {
+      chatBottomFollowUntil = Math.max(chatBottomFollowUntil, performance.now() + duration);
+      const target = Math.max(0, chat.scrollHeight - chat.clientHeight);
+      if (!animated) {
+        chat.scrollTop = target;
+        updateScrollButtonState();
+        return Promise.resolve();
+      }
+      return animateChatScroll(target, scrollDuration);
+    }
+
+    function scheduleChatBottomFollowRefresh(duration = 320) {
+      if (!shouldKeepChatBottomFollow()) return;
+      if (chatBottomFollowFrame) cancelAnimationFrame(chatBottomFollowFrame);
+      chatBottomFollowFrame = requestAnimationFrame(() => {
+        chatBottomFollowFrame = 0;
+        requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: duration }).catch(() => {});
       });
     }
 
@@ -5283,7 +5313,7 @@
         return;
       }
       await loadMessages({ source: 'login', followBottom: false, preserveScroll: false });
-      await animateChatScroll(chat.scrollHeight - chat.clientHeight);
+      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
       updateScrollButtonState();
     }
 
@@ -5474,6 +5504,7 @@
             let triedOriginal = false;
             img.addEventListener('load', () => {
               setMediaCompatibility(msg, { kind: 'image', supported: true });
+              scheduleChatBottomFollowRefresh(280);
             });
             img.addEventListener('error', () => {
               if (!triedOriginal && msg.file_url) {
@@ -5518,6 +5549,9 @@
                 openMediaByMessageId(msg.id).catch(() => {});
               };
               thumb.replaceWith(video);
+            }, { once: true });
+            thumb.addEventListener('load', () => {
+              scheduleChatBottomFollowRefresh(280);
             }, { once: true });
             thumb.onclick = (event) => {
               event?.stopPropagation?.();
@@ -6054,7 +6088,7 @@
       textInput.value = '';
       syncInputVirtualization();
       await loadMessages({ source: 'send-text', followBottom: false, preserveScroll: true });
-      await animateChatScroll(chat.scrollHeight - chat.clientHeight);
+      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
     }
 
     function inferMimeTypeFromName(fileName) {
@@ -6514,8 +6548,8 @@
         if (!hasActiveUploadTasks()) {
           hideUploadTasksPanel();
         }
-        await loadMessages({ source: 'upload-complete', followBottom: false, preserveScroll: true });
-        await animateChatScroll(chat.scrollHeight - chat.clientHeight);
+      await loadMessages({ source: 'upload-complete', followBottom: false, preserveScroll: true });
+      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
       } catch (err) {
         if (task.status !== 'cancelled') {
           task.status = 'error';
@@ -6839,6 +6873,9 @@
       if (chatState.shouldVirtualize || getVisibleMessages().length >= CHAT_VIRTUALIZE_THRESHOLD) {
         scheduleChatViewportRender();
       }
+      if (!scrollAnimationFrame && !isChatNearBottom()) {
+        chatBottomFollowUntil = 0;
+      }
       updateScrollButtonState();
       syncChatScrollIndicator(true);
       if (pendingMessages && isChatNearBottom()) {
@@ -6990,7 +7027,7 @@
       animateChatScroll(0).catch(() => {});
     };
     scrollBottomBtn.onclick = () => {
-      animateChatScroll(chat.scrollHeight - chat.clientHeight).catch(() => {});
+      requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION }).catch(() => {});
     };
 
     setInterval(() => {
