@@ -5282,7 +5282,8 @@
         updateScrollButtonState();
         return;
       }
-      await loadMessages({ source: 'login', followBottom: true, preserveScroll: false });
+      await loadMessages({ source: 'login', followBottom: false, preserveScroll: false });
+      await animateChatScroll(chat.scrollHeight - chat.clientHeight);
       updateScrollButtonState();
     }
 
