@@ -5313,7 +5313,7 @@
         return;
       }
       await loadMessages({ source: 'login', followBottom: false, preserveScroll: false });
-      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
+      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: false });
       updateScrollButtonState();
     }
 
