@@ -1886,6 +1886,7 @@
     let activeUserId = '';
     let autoReauthPromise = null;
     let allMessages = [];
+    let chatLoadedCount = 24;
     let manageMode = false;
     let currentFilter = 'all';
     let currentSearchQuery = '';
@@ -1911,6 +1912,8 @@
     let latestHandledMessageRequestSeq = 0;
     const textFileContentCache = new Map();
     let scrollAnimationFrame = 0;
+    let lastChatScrollTop = 0;
+    let chatUserScrollIntentUntil = 0;
     let chatBottomFollowUntil = 0;
     let chatBottomFollowFrame = 0;
     let chatViewportRaf = 0;
@@ -1953,6 +1956,8 @@
     const CHAT_VIRTUALIZE_THRESHOLD = 60;
     const CHAT_VIRTUAL_PRELOAD_BEFORE = 8;
     const CHAT_VIRTUAL_PRELOAD_AFTER = 14;
+    const CHAT_INITIAL_RENDER_BATCH = 24;
+    const CHAT_PREPEND_BATCH = 18;
     const SCROLL_SETTLE_MS = 120;
     const VIRTUAL_RETENTION_TTL = 600_000;
     const VIRTUAL_RETENTION_TICK_MS = 30_000;
@@ -2390,6 +2395,19 @@
       });
     }
 
+    function cancelPendingChatViewportStabilize() {
+      const state = ensureChatVirtualState();
+      state.pendingAnchor = null;
+      if (state.measureRaf) {
+        cancelAnimationFrame(state.measureRaf);
+        state.measureRaf = 0;
+      }
+      if (state.scrollSettleTimer) {
+        clearTimeout(state.scrollSettleTimer);
+        state.scrollSettleTimer = 0;
+      }
+    }
+
     function scheduleChatScrollSettle() {
       const state = ensureChatVirtualState();
       if (state.scrollSettleTimer) clearTimeout(state.scrollSettleTimer);
@@ -2584,7 +2602,7 @@
 
     function renderChatViewport({ forceMessageId = null } = {}) {
       const state = ensureChatVirtualState();
-      const visible = getVisibleMessages();
+      const visible = getRenderedChatMessages();
       trimChatHeightCache(visible);
 
       if (!visible.length) {
@@ -2696,6 +2714,10 @@
 
     function shouldDeferMessageRender() {
       return !isChatNearBottom();
+    }
+
+    function armChatUserScrollIntent(duration = 1600) {
+      chatUserScrollIntentUntil = Math.max(chatUserScrollIntentUntil, performance.now() + duration);
     }
 
     function updateRefreshButtonState() {
@@ -2886,7 +2908,8 @@
     function updateScrollButtonState() {
       const shouldShow = !loginMask.classList.contains('hidden');
       scrollFabGroup.classList.toggle('hidden', shouldShow);
-      scrollTopBtn.disabled = isChatNearTop();
+      const hasOlderUnrenderedMessages = !manageMode && chatLoadedCount < getVisibleMessages().length;
+      scrollTopBtn.disabled = isChatNearTop() && !hasOlderUnrenderedMessages;
       scrollBottomBtn.disabled = isChatNearBottom();
     }
 
@@ -5228,6 +5251,7 @@
       chatBottomFollowUntil = Math.max(chatBottomFollowUntil, performance.now() + duration);
       const target = Math.max(0, chat.scrollHeight - chat.clientHeight);
       if (!animated) {
+        cancelPendingChatViewportStabilize();
         chat.scrollTop = target;
         renderChatViewport();
         syncChatScrollIndicator(false);
@@ -5292,6 +5316,52 @@
       return allMessages.filter((msg) => matchesCurrentFilter(msg) && matchesSearchQuery(msg));
     }
 
+    function getRenderedChatMessages() {
+      const visible = getVisibleMessages();
+      if (manageMode) return visible;
+      const count = Math.min(visible.length, Math.max(CHAT_INITIAL_RENDER_BATCH, chatLoadedCount));
+      return visible.slice(Math.max(0, visible.length - count));
+    }
+
+    function resetChatLoadedCount(messages = getVisibleMessages()) {
+      if (manageMode) {
+        chatLoadedCount = messages.length;
+        return;
+      }
+      let nextCount = Math.min(messages.length, CHAT_INITIAL_RENDER_BATCH);
+      while (nextCount < messages.length) {
+        const rendered = messages.slice(Math.max(0, messages.length - nextCount));
+        const estimatedHeight = rendered.reduce((sum, msg) => sum + getChatMessageHeight(msg), 0);
+        if (estimatedHeight > chat.clientHeight + SCROLL_EDGE_THRESHOLD) {
+          break;
+        }
+        nextCount = Math.min(messages.length, nextCount + CHAT_PREPEND_BATCH);
+      }
+      chatLoadedCount = nextCount;
+    }
+
+    function prependOlderChatMessages() {
+      if (manageMode) return false;
+      if (!isChatNearTop()) return false;
+      const visible = getVisibleMessages();
+      if (chatLoadedCount >= visible.length) return false;
+      const anchor = captureChatScrollAnchor();
+      chatLoadedCount = Math.min(visible.length, chatLoadedCount + CHAT_PREPEND_BATCH);
+      renderMessages({ preserveScroll: false });
+      restoreChatScrollAnchor(anchor);
+      return true;
+    }
+
+    function collapseChatToLatestWindow() {
+      if (manageMode) return false;
+      const visible = getVisibleMessages();
+      const nextCount = Math.min(visible.length, CHAT_INITIAL_RENDER_BATCH);
+      if (chatLoadedCount === nextCount) return false;
+      chatLoadedCount = nextCount;
+      renderMessages({ preserveScroll: false });
+      return true;
+    }
+
     async function finalizeLogin(data, { rememberChoice = rememberPassword.checked, hydrate = true, reloadMessages = true, clearInput = true, password = passwordInput.value } = {}) {
       token = data.token;
       activeUserId = data.user_id || '';
@@ -5315,7 +5385,7 @@
         return;
       }
       await loadMessages({ source: 'login', followBottom: false, preserveScroll: false });
-      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: false });
+      await moveChatToLatestWindow({ animated: false });
       updateScrollButtonState();
     }
 
@@ -5663,9 +5733,18 @@
       updateScrollButtonState();
     }
 
+    function moveChatToLatestWindow({ animated = false, scrollDuration = SMOOTH_SCROLL_DURATION } = {}) {
+      collapseChatToLatestWindow();
+      return requestChatBottomFollow({
+        duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS,
+        animated,
+        scrollDuration,
+      });
+    }
+
     function scrollChatToMessageId(messageId) {
       if (messageId == null) return;
-      const visible = getVisibleMessages();
+      const visible = getRenderedChatMessages();
       const targetIndex = visible.findIndex((msg) => msg.id === messageId);
       if (targetIndex < 0) return;
       const targetTop = getChatOffsetForIndex(visible, targetIndex);
@@ -5935,8 +6014,10 @@
       if (!manageMode) {
         selectedIds.clear();
         closeSearchDialog();
+        resetChatLoadedCount(getVisibleMessages());
       } else {
         plusMenu.classList.add('hidden');
+        resetChatLoadedCount(getVisibleMessages());
       }
       updateFilterButtonStates();
       renderMessages({ preserveScroll: false });
@@ -5949,6 +6030,11 @@
 
     function applyMessages(messages, { followBottom = false, preserveScroll = true, revision = '' } = {}) {
       allMessages = messages;
+      if (!preserveScroll || manageMode) {
+        resetChatLoadedCount(messages);
+      } else if (!manageMode) {
+        chatLoadedCount = Math.min(messages.length, Math.max(chatLoadedCount, CHAT_INITIAL_RENDER_BATCH));
+      }
       buildMediaList(!mediaViewer.classList.contains('hidden') ? currentViewerMode : 'media');
       if (mediaIndex >= 0) {
         const currentMessageId = getCurrentMediaMessageId();
@@ -5961,15 +6047,16 @@
       renderMessages({ followBottom, preserveScroll });
     }
 
-    function flushPendingMessages({ followBottom = false } = {}) {
+    function flushPendingMessages({ followBottom = false, preserveScroll = !followBottom } = {}) {
       if (!pendingMessages) return false;
       const queued = pendingMessages;
       const revision = pendingRevision;
-      applyMessages(queued, { followBottom, preserveScroll: !followBottom, revision });
+      applyMessages(queued, { followBottom, preserveScroll, revision });
       return true;
     }
 
     async function loadMessages({ source = 'poll', followBottom = false, preserveScroll = true } = {}) {
+      const shouldFollowBottom = followBottom || (source === 'poll' && isChatNearBottom());
       const requestSeq = ++messageRequestSeq;
       const headers = {};
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -6012,7 +6099,11 @@
       }
 
       latestHandledMessageRequestSeq = Math.max(latestHandledMessageRequestSeq, requestSeq);
-      applyMessages(incoming, { followBottom, preserveScroll, revision: incomingRevision });
+      applyMessages(incoming, {
+        followBottom: shouldFollowBottom,
+        preserveScroll: shouldFollowBottom ? true : preserveScroll,
+        revision: incomingRevision,
+      });
     }
 
     async function login() {
@@ -6090,7 +6181,7 @@
       textInput.value = '';
       syncInputVirtualization();
       await loadMessages({ source: 'send-text', followBottom: false, preserveScroll: true });
-      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
+      await moveChatToLatestWindow({ animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
     }
 
     function inferMimeTypeFromName(fileName) {
@@ -6551,7 +6642,7 @@
           hideUploadTasksPanel();
         }
       await loadMessages({ source: 'upload-complete', followBottom: false, preserveScroll: true });
-      await requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
+      await moveChatToLatestWindow({ animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
       } catch (err) {
         if (task.status !== 'cancelled') {
           task.status = 'error';
@@ -6871,8 +6962,11 @@
 
     chat.addEventListener('scroll', () => {
       scheduleChatScrollSettle();
+      const movingTowardTop = chat.scrollTop < lastChatScrollTop - 1;
+      const allowPrepend = performance.now() <= chatUserScrollIntentUntil;
+      const prepended = movingTowardTop && allowPrepend ? prependOlderChatMessages() : false;
       const chatState = ensureChatVirtualState();
-      if (chatState.shouldVirtualize || getVisibleMessages().length >= CHAT_VIRTUALIZE_THRESHOLD) {
+      if (!prepended && (chatState.shouldVirtualize || getRenderedChatMessages().length >= CHAT_VIRTUALIZE_THRESHOLD)) {
         scheduleChatViewportRender();
       }
       if (!scrollAnimationFrame && !isChatNearBottom()) {
@@ -6881,10 +6975,17 @@
       updateScrollButtonState();
       syncChatScrollIndicator(true);
       if (pendingMessages && isChatNearBottom()) {
-        flushPendingMessages({ followBottom: true });
+        flushPendingMessages({ followBottom: true, preserveScroll: true });
       }
+      lastChatScrollTop = chat.scrollTop;
     });
-    chat.addEventListener('pointerdown', () => showChatScrollIndicator(), { passive: true });
+    chat.addEventListener('pointerdown', () => {
+      armChatUserScrollIntent();
+      showChatScrollIndicator();
+    }, { passive: true });
+    chat.addEventListener('wheel', () => {
+      armChatUserScrollIntent();
+    }, { passive: true });
 
     passwordInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') login();
@@ -7026,6 +7127,11 @@
     });
 
     scrollTopBtn.onclick = () => {
+      const visible = getVisibleMessages();
+      if (!manageMode && chatLoadedCount < visible.length) {
+        chatLoadedCount = visible.length;
+        renderMessages({ preserveScroll: false });
+      }
       animateChatScroll(0).catch(() => {});
     };
     scrollBottomBtn.onclick = () => {
