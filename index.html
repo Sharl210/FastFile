@@ -5229,6 +5229,8 @@
       const target = Math.max(0, chat.scrollHeight - chat.clientHeight);
       if (!animated) {
         chat.scrollTop = target;
+        renderChatViewport();
+        syncChatScrollIndicator(false);
         updateScrollButtonState();
         return Promise.resolve();
       }
