@@ -2342,6 +2342,7 @@
         measureRaf: 0,
         pendingAnchor: null,
         scrollSettleTimer: 0,
+        renderKey: '',
       };
       state.rowResizeObserver = new ResizeObserver((entries) => {
         let changed = false;
@@ -2623,15 +2624,18 @@
         state.start = 0;
         state.end = 0;
         state.shouldVirtualize = false;
+        state.renderKey = '';
         return;
       }
 
       const viewport = computeChatViewport(visible, forceMessageId);
+      const renderKey = `${visible[viewport.start]?.id ?? 'none'}:${visible[viewport.end - 1]?.id ?? 'none'}:${visible.length}`;
       if (
         forceMessageId == null &&
         state.start === viewport.start &&
         state.end === viewport.end &&
-        state.shouldVirtualize === viewport.shouldVirtualize
+        state.shouldVirtualize === viewport.shouldVirtualize &&
+        state.renderKey === renderKey
       ) {
         state.topSpacer.style.height = viewport.shouldVirtualize ? `${viewport.topHeight}px` : '0px';
         state.bottomSpacer.style.height = viewport.shouldVirtualize ? `${viewport.bottomHeight}px` : '0px';
@@ -2640,6 +2644,7 @@
       state.shouldVirtualize = viewport.shouldVirtualize;
       state.start = viewport.start;
       state.end = viewport.end;
+      state.renderKey = renderKey;
       state.topSpacer.style.height = viewport.shouldVirtualize ? `${viewport.topHeight}px` : '0px';
       state.bottomSpacer.style.height = viewport.shouldVirtualize ? `${viewport.bottomHeight}px` : '0px';
 
