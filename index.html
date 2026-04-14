@@ -2367,6 +2367,14 @@
 
     function queueChatViewportStabilize(anchor = null) {
       const state = ensureChatVirtualState();
+      if (shouldKeepChatBottomFollow() || isChatNearBottom()) {
+        anchor = {
+          messageId: null,
+          offset: 0,
+          scrollTop: Math.max(0, chat.scrollHeight - chat.clientHeight),
+          followBottom: true,
+        };
+      }
       if (anchor && !state.pendingAnchor) {
         state.pendingAnchor = anchor;
       }
@@ -2376,7 +2384,9 @@
         const nextAnchor = state.pendingAnchor;
         state.pendingAnchor = null;
         renderChatViewport({ forceMessageId: nextAnchor?.messageId ?? null });
-        if (nextAnchor) {
+        if (nextAnchor?.followBottom) {
+          requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: false }).catch(() => {});
+        } else if (nextAnchor) {
           restoreChatScrollAnchor(nextAnchor);
         }
       });
