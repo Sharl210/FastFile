@@ -1914,6 +1914,7 @@
     let scrollAnimationFrame = 0;
     let lastChatScrollTop = 0;
     let chatUserScrollIntentUntil = 0;
+    let chatBottomStabilizeTimer = 0;
     let chatBottomFollowUntil = 0;
     let chatBottomFollowFrame = 0;
     let chatViewportRaf = 0;
@@ -2728,6 +2729,28 @@
 
     function armChatUserScrollIntent(duration = 1600) {
       chatUserScrollIntentUntil = Math.max(chatUserScrollIntentUntil, performance.now() + duration);
+    }
+
+    function scheduleChatBottomStabilization(duration = 0, interval = 250) {
+      if (chatBottomStabilizeTimer) {
+        clearTimeout(chatBottomStabilizeTimer);
+        chatBottomStabilizeTimer = 0;
+      }
+      if (duration <= 0) return;
+      const deadline = performance.now() + duration;
+      const tick = () => {
+        if (performance.now() > deadline) {
+          chatBottomStabilizeTimer = 0;
+          return;
+        }
+        if (performance.now() <= chatUserScrollIntentUntil && !isChatNearBottom()) {
+          chatBottomStabilizeTimer = 0;
+          return;
+        }
+        requestChatBottomFollow({ duration: CHAT_BOTTOM_FOLLOW_WINDOW_MS, animated: false }).catch(() => {});
+        chatBottomStabilizeTimer = window.setTimeout(tick, interval);
+      };
+      tick();
     }
 
     function updateRefreshButtonState() {
@@ -5396,6 +5419,7 @@
       }
       await loadMessages({ source: 'login', followBottom: false, preserveScroll: false });
       await moveChatToLatestWindow({ animated: false });
+      scheduleChatBottomStabilization(6000, 250);
       updateScrollButtonState();
     }
 
