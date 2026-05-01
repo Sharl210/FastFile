@@ -3127,18 +3127,9 @@
       return text;
     }
 
-    function getTextMessageExportUrl(messageId) {
-      return `/api/messages/${encodeURIComponent(String(messageId))}/export.txt`;
-    }
-
-    async function downloadTextMessageAsFile(messageId) {
-      const res = await authorizedFetch(getTextMessageExportUrl(messageId));
-      if (!res.ok) {
-        throw new Error(`导出失败: ${res.status}`);
-      }
-      const blob = await res.blob();
-      const disposition = res.headers.get('Content-Disposition') || '';
-      const fileName = disposition.match(/filename="([^"]+)"/i)?.[1] || `message-${messageId}.txt`;
+    function downloadTextMessageAsFile(messageId, text) {
+      const blob = new Blob([text || ''], { type: 'text/plain;charset=utf-8' });
+      const fileName = `message-${messageId}.txt`;
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
@@ -5553,7 +5544,7 @@
         exportBtn.textContent = '导出为文件';
         exportBtn.onclick = async () => {
           try {
-            await downloadTextMessageAsFile(msg.id);
+            downloadTextMessageAsFile(msg.id, textValue);
             showToast('已导出 TXT');
           } catch (err) {
             showToast(err.message || '导出失败', 'error');

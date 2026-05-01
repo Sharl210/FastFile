@@ -1846,7 +1846,6 @@ async fn direct_file(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let auth = require_auth(&headers, &state).await?;
     let file_id = path.file_id;
     let _display_name = path.display_name;
     ensure_generated_token_shape(&file_id, "file_id")?;
@@ -1854,11 +1853,11 @@ async fn direct_file(
     let (file_name, mime_type): (String, String) = {
         let conn = open_conn(&state.db_path)?;
         let mut stmt = conn
-            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1 AND user_id = ?2")
+            .prepare("SELECT file_name, mime_type FROM messages WHERE file_id = ?1")
             .map_err(|e| {
                 AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("查询失败: {e}"))
             })?;
-        stmt.query_row(params![file_id, auth.user_id], |row| {
+        stmt.query_row(params![file_id], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?
                     .unwrap_or_else(|| "file".to_string()),
@@ -1939,17 +1938,15 @@ async fn direct_file(
 async fn direct_thumbnail(
     State(state): State<AppState>,
     AxumPath(path): AxumPath<ThumbnailRoutePath>,
-    headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let auth = require_auth(&headers, &state).await?;
     let file_id = path.file_id;
     ensure_generated_token_shape(&file_id, "file_id")?;
 
     let mime_type: String = {
         let conn = open_conn(&state.db_path)?;
         conn.query_row(
-            "SELECT mime_type FROM messages WHERE file_id = ?1 AND user_id = ?2",
-            params![file_id, auth.user_id],
+            "SELECT mime_type FROM messages WHERE file_id = ?1",
+            params![file_id],
             |row| row.get::<_, Option<String>>(0),
         )
         .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "文件不存在"))?
@@ -2269,5 +2266,102 @@ mod tests {
         let (bytes_mb, label_mb) = parse_upload_limit_spec("512MB").unwrap();
         assert_eq!(label_mb, "512 MB");
         assert_eq!(bytes_mb, 512_i64 * 1024 * 1024);
+    }
+
+    fn test_state(storage_root: &Path) -> AppState {
+        AppState {
+            db_path: storage_root.join("messages.db"),
+            files_dir: storage_root.join("files"),
+            thumbs_dir: storage_root.join("thumbs"),
+            temp_dir: storage_root.join("tmp"),
+            runtime_config: Arc::new(RwLock::new(RuntimeConfig {
+                users: parse_runtime_users("secret"),
+                session_ttl_seconds: 86_400,
+                single_upload_limit_bytes: 5_i64 * 1024 * 1024 * 1024,
+                single_upload_limit_label: "5 GB".to_string(),
+            })),
+            startup_config: StartupConfig { allow_web_restart: false },
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_file_allows_unauthenticated_direct_download() {
+        let storage_root = temp_storage_root("public-file-download");
+        let state = test_state(&storage_root);
+        init_storage(
+            &storage_root,
+            &state.files_dir,
+            &state.thumbs_dir,
+            &state.temp_dir,
+            &state.db_path,
+            "u_test",
+        )
+        .unwrap();
+        let file_id = create_token();
+        std::fs::write(state.files_dir.join(&file_id), b"file bytes").unwrap();
+        let conn = Connection::open(&state.db_path).unwrap();
+        conn.execute(
+            "INSERT INTO messages (user_id, kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, 'file', ?2, ?3, ?4, ?5, ?6)",
+            params!["u_test", file_id, "demo.txt", 10_i64, "text/plain", now_iso()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let response = direct_file(
+            State(state),
+            AxumPath(FileRoutePath {
+                file_id,
+                display_name: "demo.txt".to_string(),
+            }),
+            HeaderMap::new(),
+            Query(HashMap::from([("download".to_string(), "1".to_string())])),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::CONTENT_DISPOSITION).is_some());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body, Bytes::from_static(b"file bytes"));
+
+        let _ = std::fs::remove_dir_all(storage_root);
+    }
+
+    #[tokio::test]
+    async fn direct_thumbnail_allows_unauthenticated_direct_download() {
+        let storage_root = temp_storage_root("public-thumbnail-download");
+        let state = test_state(&storage_root);
+        init_storage(
+            &storage_root,
+            &state.files_dir,
+            &state.thumbs_dir,
+            &state.temp_dir,
+            &state.db_path,
+            "u_test",
+        )
+        .unwrap();
+        let file_id = create_token();
+        std::fs::write(thumbnail_path(&state.thumbs_dir, &file_id), b"png bytes").unwrap();
+        let conn = Connection::open(&state.db_path).unwrap();
+        conn.execute(
+            "INSERT INTO messages (user_id, kind, file_id, file_name, file_size, mime_type, created_at) VALUES (?1, 'file', ?2, ?3, ?4, ?5, ?6)",
+            params!["u_test", file_id.clone(), "image.png", 9_i64, "image/png", now_iso()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let response = direct_thumbnail(
+            State(state),
+            AxumPath(ThumbnailRoutePath { file_id }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body, Bytes::from_static(b"png bytes"));
+
+        let _ = std::fs::remove_dir_all(storage_root);
     }
 }
