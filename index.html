@@ -874,6 +874,17 @@
     .search-dialog input {
       width: 100%;
     }
+    .search-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .search-option input {
+      width: auto;
+    }
     .search-dialog-actions {
       display: flex;
       justify-content: space-between;
@@ -1652,6 +1663,10 @@
       <strong>搜索消息</strong>
       <div class="footer-note">支持搜索文本内容和文件名。搜索会和当前筛选一起生效。</div>
       <input id="searchInput" type="text" placeholder="输入要搜索的关键词" />
+      <label class="search-option">
+        <input id="searchRegexToggle" type="checkbox" />
+        正则表达式
+      </label>
       <div class="search-dialog-actions">
         <button id="clearSearchBtn" class="danger">清除搜索</button>
         <div class="search-dialog-right">
@@ -1809,6 +1824,7 @@
     const manageActions = document.getElementById('manageActions');
     const searchOverlay = document.getElementById('searchOverlay');
     const searchInput = document.getElementById('searchInput');
+    const searchRegexToggle = document.getElementById('searchRegexToggle');
     const searchBtn = document.getElementById('searchBtn');
     const clearSearchBtn = document.getElementById('clearSearchBtn');
     const closeSearchBtn = document.getElementById('closeSearchBtn');
@@ -1890,6 +1906,8 @@
     let manageMode = false;
     let currentFilter = 'all';
     let currentSearchQuery = '';
+    let currentSearchUseRegex = false;
+    let currentSearchRegex = null;
     const selectedIds = new Set();
 
     let confirmDialogResolver = null;
@@ -2612,6 +2630,14 @@
       };
     }
 
+    function syncRenderedChatRows(messages, start) {
+      const state = ensureChatVirtualState();
+      Array.from(state.host.children).forEach((row, offset) => {
+        const msg = messages[start + offset];
+        if (msg) syncCachedMessageRow(row, msg);
+      });
+    }
+
     function renderChatViewport({ forceMessageId = null } = {}) {
       const state = ensureChatVirtualState();
       const visible = getRenderedChatMessages();
@@ -2639,6 +2665,7 @@
       ) {
         state.topSpacer.style.height = viewport.shouldVirtualize ? `${viewport.topHeight}px` : '0px';
         state.bottomSpacer.style.height = viewport.shouldVirtualize ? `${viewport.bottomHeight}px` : '0px';
+        syncRenderedChatRows(visible, viewport.start);
         return;
       }
       state.shouldVirtualize = viewport.shouldVirtualize;
@@ -3205,15 +3232,33 @@
       };
     }
 
-    function normalizeSearchQuery(value) {
-      return String(value || '').trim().toLowerCase();
+    function normalizeSearchQuery(value, useRegex = currentSearchUseRegex) {
+      const query = String(value || '').trim();
+      return useRegex ? query : query.toLowerCase();
+    }
+
+    function getSearchTargetText(msg) {
+      const text = msg?.kind === 'text' ? String(msg.text || '') : '';
+      const fileName = msg?.kind === 'file' ? String(msg.file_name || '') : '';
+      return `${text}\n${fileName}`;
+    }
+
+    function compileSearchRegex(query) {
+      if (!query) return null;
+      try {
+        return new RegExp(query, 'i');
+      } catch (_) {
+        throw new Error('正则表达式不正确');
+      }
     }
 
     function matchesSearchQuery(msg, query = currentSearchQuery) {
       if (!query) return true;
-      const text = msg?.kind === 'text' ? String(msg.text || '') : '';
-      const fileName = msg?.kind === 'file' ? String(msg.file_name || '') : '';
-      return text.toLowerCase().includes(query) || fileName.toLowerCase().includes(query);
+      const target = getSearchTargetText(msg);
+      if (currentSearchUseRegex) {
+        return Boolean(currentSearchRegex?.test(target));
+      }
+      return target.toLowerCase().includes(query);
     }
 
     function matchesCurrentFilter(msg) {
@@ -3238,12 +3283,13 @@
       if (currentFilter !== 'all') {
         filterMenuBtn.classList.add(`active-${currentFilter}`);
       }
-      searchBtn.classList.toggle('active-search', Boolean(currentSearchQuery));
+      searchBtn.classList.toggle('active-search', Boolean(currentSearchQuery || currentSearchUseRegex));
       updateResetSizeButtonState();
     }
 
     function openSearchDialog() {
       searchInput.value = currentSearchQuery;
+      searchRegexToggle.checked = currentSearchUseRegex;
       searchOverlay.classList.remove('hidden');
       requestAnimationFrame(() => {
         searchInput.focus();
@@ -3378,10 +3424,31 @@
       filterMenu.classList.toggle('hidden', nextHidden);
     }
 
-    function applySearchQuery(value) {
-      currentSearchQuery = normalizeSearchQuery(value);
+    function getVisibleMessageCount() {
+      return getVisibleMessages().length;
+    }
+
+    function applySearchFromDialog() {
+      try {
+        applySearchQuery(searchInput.value, { useRegex: searchRegexToggle.checked });
+        closeSearchDialog();
+      } catch (err) {
+        showToast(err.message || '搜索失败', 'error');
+      }
+    }
+
+    function applySearchQuery(value, { useRegex = searchRegexToggle.checked, notify = true } = {}) {
+      const nextQuery = normalizeSearchQuery(value, useRegex);
+      const nextRegex = useRegex ? compileSearchRegex(nextQuery) : null;
+      currentSearchQuery = nextQuery;
+      currentSearchUseRegex = Boolean(useRegex && nextQuery);
+      currentSearchRegex = nextRegex;
       updateFilterButtonStates();
       renderMessages({ preserveScroll: true });
+      if (notify) {
+        const count = getVisibleMessageCount();
+        showToast(`搜索已应用，当前显示 ${count} 条消息`, count > 0 ? 'success' : 'error');
+      }
     }
 
     function syncVirtualTextareaBinding(binding, { force = false } = {}) {
@@ -6705,15 +6772,21 @@
         message: '服务重启后，当前会话可能会短暂中断。',
       });
       if (!confirmed) return;
-      const result = await api('/api/admin/restart', { method: 'POST' });
       restartBtn.disabled = true;
       restartBtn.textContent = '正在重启...';
-      alert(result.message || '重启请求已发送');
+      try {
+        const result = await api('/api/admin/restart', { method: 'POST' });
+        showToast(result.message || '重启请求已发送');
+      } catch (err) {
+        restartBtn.disabled = false;
+        restartBtn.textContent = '重启服务';
+        showToast(err.message || '重启失败', 'error');
+      }
     }
 
     async function deleteSelected() {
       if (!selectedIds.size) {
-        alert('请先勾选要删除的记录');
+        showToast('请先勾选要删除的记录', 'error');
         return;
       }
       const deletingIds = new Set(selectedIds);
@@ -6724,18 +6797,20 @@
           mediaCompatibilityCache.delete(msg.file_id);
           audioVisualCache.delete(msg.file_id);
         });
-      await api('/api/messages', {
+      const result = await api('/api/messages', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: Array.from(selectedIds) })
       });
+      const deleted = Number(result.deleted || 0);
       selectedIds.clear();
       await loadMessages({ source: 'delete', followBottom: false, preserveScroll: true });
+      showToast(`已删除 ${deleted} 条记录`);
     }
 
     async function handleDeleteClick() {
       if (!selectedIds.size) {
-        alert('请先勾选要删除的记录');
+        showToast('请先勾选要删除的记录', 'error');
         return;
       }
       const confirmed = await openConfirmDialog({
@@ -6743,20 +6818,28 @@
         message: `即将删除 ${selectedIds.size} 条已选记录，此操作不可撤销。`,
       });
       if (!confirmed) return;
-      await deleteSelected();
+      try {
+        await deleteSelected();
+      } catch (err) {
+        showToast(err.message || '删除失败', 'error');
+      }
     }
 
     function selectAllVisible() {
-      for (const m of getVisibleMessages()) selectedIds.add(m.id);
+      const visible = getVisibleMessages();
+      for (const m of visible) selectedIds.add(m.id);
       renderMessages({ preserveScroll: true });
+      showToast(`已全选 ${visible.length} 条可见记录`);
     }
 
     function invertVisible() {
-      for (const m of getVisibleMessages()) {
+      const visible = getVisibleMessages();
+      for (const m of visible) {
         if (selectedIds.has(m.id)) selectedIds.delete(m.id);
         else selectedIds.add(m.id);
       }
       renderMessages({ preserveScroll: true });
+      showToast(`已反选 ${visible.length} 条可见记录`);
     }
 
     loginBtn.onclick = login;
@@ -6803,7 +6886,7 @@
       plusMenu.classList.add('hidden');
     };
 
-    restartBtn.onclick = () => handleRestartClick().catch((e) => alert(e.message));
+    restartBtn.onclick = () => handleRestartClick();
 
     manageBtn.onclick = () => {
       manageMode = !manageMode;
@@ -6814,7 +6897,7 @@
       updateManageUi();
     };
 
-    deleteBtn.onclick = () => handleDeleteClick().catch((e) => alert(e.message));
+    deleteBtn.onclick = () => handleDeleteClick();
     resetSizeBtn.onclick = async () => {
       try {
         const confirmed = await openConfirmDialog({
@@ -6823,8 +6906,9 @@
         });
         if (!confirmed) return;
         await restoreDefaultUiState();
+        showToast('已恢复默认窗口高度');
       } catch (e) {
-        alert(e.message);
+        showToast(e.message || '恢复窗口高度失败', 'error');
       }
     };
     selectAllBtn.onclick = selectAllVisible;
@@ -6839,6 +6923,7 @@
     };
     clearSearchBtn.onclick = () => {
       searchInput.value = '';
+      searchRegexToggle.checked = false;
       applySearchQuery('');
       closeSearchDialog();
     };
@@ -6849,8 +6934,7 @@
       activeLargePasteSession?.onCancel?.();
     };
     confirmSearchBtn.onclick = () => {
-      applySearchQuery(searchInput.value);
-      closeSearchDialog();
+      applySearchFromDialog();
     };
     filterButtons.forEach((button) => {
       button.onclick = () => {
@@ -6858,6 +6942,9 @@
         updateFilterButtonStates();
         toggleFilterMenu(false);
         renderMessages({ preserveScroll: true });
+        const count = getVisibleMessageCount();
+        const label = button.textContent || '筛选';
+        showToast(`${label}已应用，当前显示 ${count} 条消息`, count > 0 ? 'success' : 'error');
       };
     });
 
@@ -6905,8 +6992,7 @@
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        applySearchQuery(searchInput.value);
-        closeSearchDialog();
+        applySearchFromDialog();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         closeSearchDialog();

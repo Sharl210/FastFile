@@ -2268,6 +2268,48 @@ mod tests {
         assert_eq!(bytes_mb, 512_i64 * 1024 * 1024);
     }
 
+    #[test]
+    fn index_page_contains_regex_search_controls_and_logic() {
+        let html = include_str!("../index.html");
+
+        assert!(html.contains("id=\"searchRegexToggle\""));
+        assert!(html.contains("type=\"checkbox\""));
+        assert!(html.contains("let currentSearchUseRegex = false;"));
+        assert!(html.contains("new RegExp"));
+        assert!(html.contains("正则表达式不正确"));
+    }
+
+    #[test]
+    fn index_page_uses_visible_messages_for_bulk_selection() {
+        let html = include_str!("../index.html");
+
+        assert!(html.contains("const visible = getVisibleMessages();"));
+        assert!(html.contains("for (const m of visible) selectedIds.add(m.id);"));
+        assert!(html.contains("for (const m of visible)"));
+        assert!(html.contains("matchesCurrentFilter(msg) && matchesSearchQuery(msg)"));
+        assert!(html.contains("showToast(`已全选 ${visible.length} 条可见记录`)"));
+        assert!(html.contains("showToast(`已反选 ${visible.length} 条可见记录`)"));
+    }
+
+    #[test]
+    fn index_page_syncs_bulk_selection_into_unchanged_virtual_rows() {
+        let html = include_str!("../index.html");
+
+        assert!(html.contains("function syncRenderedChatRows(messages, start)"));
+        assert!(html.contains("syncRenderedChatRows(visible, viewport.start);"));
+    }
+
+    #[test]
+    fn index_page_toasts_manage_operation_results() {
+        let html = include_str!("../index.html");
+
+        assert!(html.contains("showToast(`已删除 ${deleted} 条记录`)"));
+        assert!(html.contains("showToast(result.message || '重启请求已发送')"));
+        assert!(html.contains("showToast('已恢复默认窗口高度')"));
+        assert!(html.contains("showToast(`搜索已应用，当前显示 ${count} 条消息`, count > 0 ? 'success' : 'error')"));
+        assert!(html.contains("showToast(`${label}已应用，当前显示 ${count} 条消息`, count > 0 ? 'success' : 'error')"));
+    }
+
     fn test_state(storage_root: &Path) -> AppState {
         AppState {
             db_path: storage_root.join("messages.db"),
