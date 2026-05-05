@@ -2310,6 +2310,35 @@ mod tests {
         assert!(html.contains("showToast(`${label}已应用，当前显示 ${count} 条消息`, count > 0 ? 'success' : 'error')"));
     }
 
+    #[test]
+    fn index_page_has_upload_pause_resume_and_retry_controls() {
+        let html = include_str!("../index.html");
+
+        assert!(html.contains("paused: '已暂停'"));
+        assert!(html.contains("pauseUploadTask(t.id)"));
+        assert!(html.contains("resumeUploadTask(t.id)"));
+        assert!(html.contains("retryUploadTask(t.id)"));
+        assert!(html.contains("function pauseUploadTask(taskId)"));
+        assert!(html.contains("function resumeUploadTask(taskId)"));
+        assert!(html.contains("function retryUploadTask(taskId)"));
+        assert!(html.contains("task.status === 'paused'"));
+    }
+
+    #[test]
+    fn index_page_colors_plus_menu_options_by_file_type() {
+        let html = include_str!("../index.html");
+
+        assert!(html.contains("class=\"panel plus-menu hidden\""));
+        assert!(html.contains("class=\"plus-menu-item plus-menu-image\""));
+        assert!(html.contains("class=\"plus-menu-item plus-menu-video\""));
+        assert!(html.contains("class=\"plus-menu-item plus-menu-audio\""));
+        assert!(html.contains("class=\"plus-menu-item plus-menu-file\""));
+        assert!(html.contains(".plus-menu-image"));
+        assert!(html.contains(".plus-menu-video"));
+        assert!(html.contains(".plus-menu-audio"));
+        assert!(html.contains(".plus-menu-file"));
+    }
+
     fn test_state(storage_root: &Path) -> AppState {
         AppState {
             db_path: storage_root.join("messages.db"),

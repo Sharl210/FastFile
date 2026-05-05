@@ -189,6 +189,42 @@
       text-align: center;
       box-sizing: border-box;
     }
+    .plus-menu {
+      position: absolute;
+      bottom: 42px;
+      left: 0;
+      min-width: 180px;
+      z-index: 70;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .plus-menu-item {
+      width: 100%;
+      text-align: left;
+      font-weight: 600;
+    }
+    .plus-menu-image {
+      background: #f6edff;
+      border-color: #dcc6ff;
+      color: #6b43bd;
+    }
+    .plus-menu-video {
+      background: #eaf5ff;
+      border-color: #c4dfff;
+      color: #2663c9;
+    }
+    .plus-menu-audio {
+      background: #fff0f8;
+      border-color: #f3c9e2;
+      color: #b0488b;
+    }
+    .plus-menu-file {
+      background: #fff6df;
+      border-color: #efd391;
+      color: #9a6b00;
+    }
     #sendTextBtn {
       min-height: var(--composer-action-size);
       padding-top: 0;
@@ -932,6 +968,12 @@
       grid-template-columns: repeat(3, minmax(130px, 1fr));
       font-size: 12px;
       color: var(--muted);
+    }
+    .task-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
     }
 
     #manageTools {
@@ -1786,11 +1828,11 @@
       <div class="composer-actions">
         <div style="position:relative;">
           <button id="plusMenuBtn" title="上传菜单">+</button>
-          <div id="plusMenu" class="panel hidden" style="position:absolute; bottom:42px; left:0; min-width:180px; z-index:70; padding:8px;">
-            <button id="pickImageBtn" style="width:100%; text-align:left; margin-bottom:6px;">图片上传</button>
-            <button id="pickVideoBtn" style="width:100%; text-align:left; margin-bottom:6px;">视频上传</button>
-            <button id="pickAudioBtn" style="width:100%; text-align:left; margin-bottom:6px;">音频上传</button>
-            <button id="pickFileBtn" style="width:100%; text-align:left;">文件上传</button>
+          <div id="plusMenu" class="panel plus-menu hidden">
+            <button id="pickImageBtn" class="plus-menu-item plus-menu-image">图片上传</button>
+            <button id="pickVideoBtn" class="plus-menu-item plus-menu-video">视频上传</button>
+            <button id="pickAudioBtn" class="plus-menu-item plus-menu-audio">音频上传</button>
+            <button id="pickFileBtn" class="plus-menu-item plus-menu-file">文件上传</button>
           </div>
           <input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden" />
           <input id="videoUploadInput" type="file" accept="video/*" multiple class="hidden" />
@@ -2327,6 +2369,7 @@
         uploading: '上传中',
         thumbnailing: '缩略图生成中',
         retrying: '重试中',
+        paused: '已暂停',
         done: '完成',
         error: '失败',
         cancelled: '已取消'
@@ -6457,6 +6500,7 @@
         etaSec: null,
         error: '',
         retries: 0,
+        processing: false,
         needsThumbnail,
         thumbnailReady: !needsThumbnail,
         thumbnailDataUrl: null,
@@ -6581,13 +6625,43 @@
           card.appendChild(err);
         }
 
+        const taskActions = document.createElement('div');
+        taskActions.className = 'task-actions';
         if (t.status === 'uploading' || t.status === 'retrying' || t.status === 'queued') {
+          const pause = document.createElement('button');
+          pause.className = 'warning';
+          pause.textContent = '暂停';
+          pause.onclick = () => pauseUploadTask(t.id);
+          taskActions.appendChild(pause);
+
           const cancel = document.createElement('button');
           cancel.className = 'danger';
           cancel.textContent = '取消上传';
           cancel.onclick = () => cancelTask(t.id);
-          cancel.style.marginTop = '8px';
-          card.appendChild(cancel);
+          taskActions.appendChild(cancel);
+        }
+        if (t.status === 'paused') {
+          const resume = document.createElement('button');
+          resume.className = 'success';
+          resume.textContent = '继续';
+          resume.onclick = () => resumeUploadTask(t.id);
+          taskActions.appendChild(resume);
+
+          const cancel = document.createElement('button');
+          cancel.className = 'danger';
+          cancel.textContent = '取消上传';
+          cancel.onclick = () => cancelTask(t.id);
+          taskActions.appendChild(cancel);
+        }
+        if (t.status === 'error' || t.status === 'cancelled') {
+          const retry = document.createElement('button');
+          retry.className = 'success';
+          retry.textContent = '重试';
+          retry.onclick = () => retryUploadTask(t.id);
+          taskActions.appendChild(retry);
+        }
+        if (taskActions.childElementCount) {
+          card.appendChild(taskActions);
         }
 
         uploadTaskList.appendChild(card);
@@ -6614,7 +6688,60 @@
       renderUploadTasks();
     }
 
+    function pauseUploadTask(taskId) {
+      const task = uploadTasks.get(taskId);
+      if (!task || task.status === 'done' || task.status === 'cancelled') return;
+      task.status = 'paused';
+      task.error = '';
+      task.controllers.forEach((controller) => {
+        controller.abort();
+      });
+      task.controllers.clear();
+      renderUploadTasks();
+      showToast('上传已暂停');
+    }
+
+    function resetTaskForUpload(task, { resetProgress = false } = {}) {
+      task.status = 'queued';
+      task.error = '';
+      task.completedAt = null;
+      task.retries = 0;
+      task.processing = false;
+      task.controllers.clear();
+      task.startedAt = Date.now();
+      task.lastSampleAt = task.startedAt;
+      task.lastSampleBytes = resetProgress ? 0 : task.uploadedBytes;
+      task.samples = [];
+      task.speedBps = 0;
+      task.etaSec = null;
+      if (resetProgress) {
+        task.uploadId = '';
+        task.uploadedBytes = 0;
+        task.chunks = [];
+      }
+    }
+
+    function resumeUploadTask(taskId) {
+      const task = uploadTasks.get(taskId);
+      if (!task || task.status !== 'paused') return;
+      resetTaskForUpload(task);
+      renderUploadTasks();
+      processUploadTask(task);
+      showToast('上传已继续');
+    }
+
+    function retryUploadTask(taskId) {
+      const task = uploadTasks.get(taskId);
+      if (!task || (task.status !== 'error' && task.status !== 'cancelled')) return;
+      resetTaskForUpload(task, { resetProgress: task.status === 'cancelled' });
+      renderUploadTasks();
+      processUploadTask(task);
+      showToast('上传已重试');
+    }
+
     async function processUploadTask(task) {
+      if (task.processing) return;
+      task.processing = true;
       const CHUNK_FALLBACK = 4 * 1024 * 1024;
       let chunkSize = CHUNK_FALLBACK;
       let parallelLimit = 4;
@@ -6644,7 +6771,7 @@
 
         const uploadChunk = async (chunk) => {
           while (!chunk.done) {
-            if (task.status === 'cancelled') return;
+            if (task.status === 'cancelled' || task.status === 'paused') return;
             const blob = task.file.slice(chunk.start, chunk.end);
             const controller = new AbortController();
             task.controllers.add(controller);
@@ -6674,7 +6801,10 @@
             } catch (err) {
               task.controllers.delete(controller);
               chunk.inflight = false;
-              if (task.status === 'cancelled') return;
+              if (err?.name === 'AbortError') {
+                chunk.checksum = '';
+              }
+              if (task.status === 'cancelled' || task.status === 'paused') return;
               task.retries += 1;
               if (task.retries > 5) throw err;
 
@@ -6705,7 +6835,7 @@
 
         const workers = Array.from({ length: Math.max(1, parallelLimit) }, async () => {
           while (true) {
-            if (task.status === 'cancelled') return;
+            if (task.status === 'cancelled' || task.status === 'paused') return;
             const nextChunk = task.chunks.find((chunk) => !chunk.done && !chunk.inflight);
             if (!nextChunk) return;
             nextChunk.inflight = true;
@@ -6714,7 +6844,7 @@
         });
 
         await Promise.all(workers);
-        if (task.status === 'cancelled') return;
+        if (task.status === 'cancelled' || task.status === 'paused') return;
 
         if (task.needsThumbnail && !task.thumbnailReady) {
           task.status = 'thumbnailing';
@@ -6741,7 +6871,7 @@
       await loadMessages({ source: 'upload-complete', followBottom: false, preserveScroll: true });
       await moveChatToLatestWindow({ animated: true, scrollDuration: SMOOTH_SCROLL_DURATION });
       } catch (err) {
-        if (task.status !== 'cancelled') {
+        if (task.status !== 'cancelled' && task.status !== 'paused') {
           task.status = 'error';
           task.error = err?.message || String(err);
           task.completedAt = Date.now();
@@ -6750,6 +6880,8 @@
             hideUploadTasksPanel();
           }
         }
+      } finally {
+        task.processing = false;
       }
     }
 
